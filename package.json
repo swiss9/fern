@@ -16,5 +16,8 @@
     "@capacitor/core": "^8.5.3",
     "@capawesome/capacitor-file-picker": "^8.1.1",
     "llama-cpp-capacitor": "^0.1.5"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5"
   }
 }

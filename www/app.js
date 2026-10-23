@@ -105,24 +105,8 @@ async function loadModelFile(modelPath, notify) {
   throw lastError || new Error('Could not initialize model context');
 }
 
-function createPickButton() {
-  const existing = document.getElementById('pick-model-btn');
-  if (existing) existing.remove();
-  let btn = document.createElement('button');
-  btn.id = 'pick-model-btn';
-  btn.type = 'button';
-  btn.className =
-    'mt-4 flex items-center gap-2 rounded-md border border-line bg-panel px-4 py-2 font-mono text-xs uppercase tracking-[0.12em] text-white transition hover:bg-white/10 active:bg-white/20';
-  btn.innerText = 'Choose .gguf file';
-  btn.addEventListener('click', pickAndLoadModel);
-  overlay.querySelector('.flex-col')?.appendChild(btn);
-  return btn;
-}
-
 async function pickAndLoadModel() {
   const { LlamaCpp, FilePicker } = getPlugins();
-  document.getElementById('pick-model-btn')?.remove();
-
   showOverlay('Selecting model file...');
   try {
     const result = await FilePicker.pickFiles({
@@ -132,12 +116,10 @@ async function pickAndLoadModel() {
     const file = result.files && result.files[0];
     if (!file) {
       showOverlay('No file selected.');
-      createPickButton();
       return;
     }
     if (!file.name || !/\.gguf$/i.test(file.name)) {
       showOverlay('That file is not a .gguf model. Pick a .gguf file.');
-      createPickButton();
       return;
     }
     modelName = file.name;
@@ -148,7 +130,6 @@ async function pickAndLoadModel() {
     console.error('Model load failed:', error);
     showOverlay('Failed to load model: ' + (error.message || String(error)));
     progressText.classList.add('text-red-400');
-    createPickButton();
   }
 }
 
@@ -170,8 +151,7 @@ async function initModel() {
     console.warn('getAvailableModels failed, falling back to picker:', e);
   }
 
-  showOverlay('No local model found. Select a .gguf model file.');
-  createPickButton();
+  showOverlay('No local model found. Please tap the paperclip icon to select a .gguf file.');
 }
 
 function onModelReady() {
@@ -315,6 +295,9 @@ inputEl.addEventListener('input', () => {
   inputEl.style.height = 'auto';
   inputEl.style.height = inputEl.scrollHeight + 'px';
 });
+
+// FILE PICKER BINDING (paperclip button)
+document.getElementById('attach-btn').addEventListener('click', pickAndLoadModel);
 
 // ============================================================
 // 8. BOOTSTRAP

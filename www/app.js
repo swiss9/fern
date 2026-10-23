@@ -36,7 +36,7 @@ function showOverlay(text) {
   progressText.classList.remove('text-red-400');
   progressText.innerText = text;
   overlay.style.opacity = '1';
-  overlay.style.pointerEvents = 'auto';
+  overlay.style.pointerEvents = 'none';
 }
 
 function hideOverlay() {

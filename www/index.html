@@ -68,10 +68,9 @@
 <body class="h-full bg-base font-sans text-ink">
 
 <!-- Loading Overlay -->
-<div id="loading-overlay" class="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-base/90 backdrop-blur-sm transition-opacity duration-500">
+<div id="loading-overlay" class="pointer-events-none fixed inset-0 z-[100] flex flex-col items-center justify-center bg-base/90 backdrop-blur-sm transition-opacity duration-500">
   <div class="w-full max-w-md px-6">
     <div class="mb-4 flex items-center justify-between">
-      <span class="font-mono text-sm text-white">Initializing Engine</span>
       <span id="progress-text" class="font-mono text-sm text-zinc-400">Downloading model: 0%</span>
     </div>
     <div class="h-1.5 w-full overflow-hidden rounded-full bg-line">

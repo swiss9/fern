@@ -68,7 +68,7 @@
 <body class="h-full bg-base font-sans text-ink">
 
 <!-- Loading Overlay -->
-<div id="loading-overlay" class="pointer-events-none fixed inset-0 z-[100] flex flex-col items-center justify-center bg-base/90 backdrop-blur-sm transition-opacity duration-500">
+<div id="loading-overlay" class="hidden pointer-events-none fixed inset-0 z-[100] flex flex-col items-center justify-center bg-base/90 backdrop-blur-sm transition-opacity duration-500">
   <div class="w-full max-w-md px-6">
     <div class="mb-4 flex items-center justify-between">
       <span id="progress-text" class="font-mono text-sm text-zinc-400">Downloading model: 0%</span>
@@ -293,20 +293,7 @@
     <!-- Chat scroll area -->
     <div id="chat-container" class="scroll-thin relative min-h-0 flex-1 overflow-y-auto">
       <div class="grid-fade pointer-events-none absolute inset-x-0 top-0 h-56"></div>
-
-      <div class="relative mx-auto w-full max-w-3xl px-4 pb-10 pt-8 sm:px-6">
-
-        <!-- Date divider -->
-        <div class="mb-8 flex items-center gap-3">
-          <span class="h-px flex-1 bg-line"></span>
-          <span class="font-mono text-[10px] uppercase tracking-[0.14em] text-zinc-600">Today · 10:41</span>
-          <span class="h-px flex-1 bg-line"></span>
-        </div>
-
-        <!-- Initial assistant message (will be replaced/added by JS) -->
-        <!-- We leave this empty, JS will populate it -->
-
-      </div>
+      <div id="messages" class="relative mx-auto w-full max-w-3xl px-4 pb-10 pt-8 sm:px-6"></div>
     </div>
 
     <!-- ============================================================

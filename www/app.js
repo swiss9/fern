@@ -1,3 +1,5 @@
+console.log("App.js loaded");
+
 // ============================================================
 // 1. NATIVE PLUGINS (via window.Capacitor.Plugins — no bundler)
 // ============================================================
@@ -15,6 +17,7 @@ const getPlugins = () => {
 // 2. UI ELEMENTS
 // ============================================================
 const chatContainer = document.getElementById('chat-container');
+const messagesEl = document.getElementById('messages');
 const inputEl = document.getElementById('chat-input');
 const sendBtn = document.getElementById('send-btn');
 const overlay = document.getElementById('loading-overlay');
@@ -35,11 +38,15 @@ let activeListener = null;
 function showOverlay(text) {
   progressText.classList.remove('text-red-400');
   progressText.innerText = text;
+  overlay.classList.remove('hidden');
+  overlay.style.display = 'flex';
   overlay.style.opacity = '1';
   overlay.style.pointerEvents = 'none';
 }
 
 function hideOverlay() {
+  overlay.classList.add('hidden');
+  overlay.style.display = 'none';
   overlay.style.opacity = '0';
   overlay.style.pointerEvents = 'none';
 }
@@ -106,7 +113,9 @@ async function loadModelFile(modelPath, notify) {
 }
 
 async function pickAndLoadModel() {
+  overlay.classList.remove('hidden');
   overlay.style.display = 'flex';
+  setSendEnabled(false);
   const { LlamaCpp, FilePicker } = getPlugins();
   showOverlay('Selecting model file...');
   try {
@@ -116,10 +125,12 @@ async function pickAndLoadModel() {
     });
     const file = result.files && result.files[0];
     if (!file) {
+      overlay.classList.add('hidden');
       overlay.style.display = 'none';
       return;
     }
     if (!file.name || !/\.gguf$/i.test(file.name)) {
+      overlay.classList.add('hidden');
       overlay.style.display = 'none';
       appendMessage('assistant', 'That file is not a .gguf model. Please tap the paperclip and pick a .gguf file.');
       return;
@@ -153,6 +164,7 @@ async function initModel() {
     console.warn('getAvailableModels failed, falling back to picker:', e);
   }
 
+  overlay.classList.add('hidden');
   overlay.style.display = 'none';
   appendMessage('assistant', 'No local model found. Please tap the paperclip icon below to select a .gguf file.');
 }
@@ -202,7 +214,7 @@ function appendMessage(role, content) {
     if (content) div.querySelector('p').innerText = content;
   }
 
-  chatContainer.appendChild(div);
+  messagesEl.appendChild(div);
   chatContainer.scrollTop = chatContainer.scrollHeight;
   return div;
 }
@@ -300,7 +312,7 @@ inputEl.addEventListener('input', () => {
 });
 
 // FILE PICKER BINDING (paperclip button)
-document.getElementById('attach-btn').addEventListener('click', pickAndLoadModel);
+document.getElementById('attach-btn').addEventListener('click', () => { console.log("Paperclip clicked"); pickAndLoadModel(); });
 
 // ============================================================
 // 8. BOOTSTRAP

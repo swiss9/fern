@@ -1,0 +1,8 @@
+node_modules/
+android/app/build/
+android/build/
+.gradle/
+*.apk
+
+# Old git metadata left behind by the unusable history rewrite
+.git_old/

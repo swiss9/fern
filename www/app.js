@@ -106,6 +106,7 @@ async function loadModelFile(modelPath, notify) {
 }
 
 async function pickAndLoadModel() {
+  overlay.style.display = 'flex';
   const { LlamaCpp, FilePicker } = getPlugins();
   showOverlay('Selecting model file...');
   try {
@@ -115,11 +116,12 @@ async function pickAndLoadModel() {
     });
     const file = result.files && result.files[0];
     if (!file) {
-      showOverlay('No file selected.');
+      overlay.style.display = 'none';
       return;
     }
     if (!file.name || !/\.gguf$/i.test(file.name)) {
-      showOverlay('That file is not a .gguf model. Pick a .gguf file.');
+      overlay.style.display = 'none';
+      appendMessage('assistant', 'That file is not a .gguf model. Please tap the paperclip and pick a .gguf file.');
       return;
     }
     modelName = file.name;
@@ -151,7 +153,8 @@ async function initModel() {
     console.warn('getAvailableModels failed, falling back to picker:', e);
   }
 
-  showOverlay('No local model found. Please tap the paperclip icon to select a .gguf file.');
+  overlay.style.display = 'none';
+  appendMessage('assistant', 'No local model found. Please tap the paperclip icon below to select a .gguf file.');
 }
 
 function onModelReady() {

@@ -1,4 +1,8 @@
 console.log("App.js loaded");
+window.onerror = function(msg, url, line, col, error) {
+  alert("JS Error: " + msg + "\nLine: " + line);
+  return false;
+};
 
 // ============================================================
 // 1. NATIVE PLUGINS (via window.Capacitor.Plugins — no bundler)
@@ -294,6 +298,7 @@ async function generateResponse(userPrompt) {
 // 7. EVENT LISTENERS
 // ============================================================
 sendBtn.addEventListener('click', () => {
+  alert("Send clicked!");
   const text = inputEl.value.trim();
   if (text) generateResponse(text);
 });
@@ -312,18 +317,24 @@ inputEl.addEventListener('input', () => {
 });
 
 // FILE PICKER BINDING (paperclip button)
-document.getElementById('attach-btn').addEventListener('click', () => { console.log("Paperclip clicked"); pickAndLoadModel(); });
+document.getElementById('attach-btn').addEventListener('click', () => {
+  alert("Paperclip clicked!");
+  console.log("Paperclip clicked");
+  pickAndLoadModel();
+});
 
 // ============================================================
 // 8. BOOTSTRAP
 // ============================================================
 window.addEventListener('DOMContentLoaded', () => {
-  setSendEnabled(false);
   try {
-    initModel();
+    setSendEnabled(false);
+    initModel().catch((error) => {
+      console.error('Init error:', error);
+      alert("Init Error: " + (error && error.message ? error.message : String(error)));
+    });
   } catch (error) {
     console.error('Bootstrap error:', error);
-    showOverlay('Error: ' + error.message);
-    progressText.classList.add('text-red-400');
+    alert("Init Error: " + (error && error.message ? error.message : String(error)));
   }
 });

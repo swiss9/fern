@@ -103,7 +103,7 @@
               d="M40 3 L70 25 L60 55 L40 77 L20 55 L10 25 Z M40 12 L18 27 L35 43 L22 39 L40 61 L58 39 L45 43 L62 27 Z" />
       </svg>
       <span class="text-[14px] font-semibold tracking-tight text-white">Fern</span>
-      <span class="ml-auto rounded border border-line px-1.5 py-[2px] font-mono text-[9px] uppercase tracking-[0.12em] text-zinc-500">v0.4</span>
+      <span class="ml-auto rounded border border-line px-1.5 py-[2px] font-mono text-[9px] uppercase tracking-[0.12em] text-zinc-500">v1.3</span>
       <label for="nav-toggle" class="-mr-1 ml-1 flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-zinc-400 transition hover:bg-white/5 hover:text-white md:hidden">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </label>
@@ -111,7 +111,7 @@
 
     <!-- New chat -->
     <div class="shrink-0 px-3 pb-3 pt-3">
-      <button type="button"
+      <button type="button" id="new-chat-btn"
               class="group flex h-9 w-full items-center gap-2 rounded-md bg-white px-3 text-[13px] font-medium text-base transition-colors duration-150 hover:bg-zinc-200 active:bg-zinc-300">
         <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         <span>New Chat</span>
@@ -154,7 +154,7 @@
               <path fill="#ffffff" fill-rule="evenodd" clip-rule="evenodd" d="M7.6 2.2c.6-.2 1.2.2 1.3.8l.5 2.9c.9-.4 1.7-.6 2.6-.6s1.7.2 2.6.6l.5-2.9c.1-.6.7-1 1.3-.8.6.2 1 .8.8 1.4l-.5 3.1c1.5 1.1 2.4 2.8 2.4 4.7 0 2.2-1.2 4.1-3 5.2l-.5 4.2c-.1 1.4-1.3 2.5-2.7 2.5h-2.2c-1.4 0-2.6-1.1-2.7-2.5l-.5-4.2c-1.8-1.1-3-3-3-5.2 0-1.9.9-3.6 2.4-4.7l-.5-3.1c-.2-.6.2-1.2.8-1.4Zm2.3 9.6a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Zm4.2 0a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Z"/>
             </svg>
           </span>
-          <span class="truncate">Llama 3.2 1B</span>
+          <span id="sidebar-model-label" class="truncate">No model</span>
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="ml-auto shrink-0 text-zinc-500 transition-transform duration-200 group-open:rotate-180"><polyline points="6 9 12 15 18 9"/></svg>
         </summary>
 
@@ -162,30 +162,23 @@
           <p class="border-b border-line px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-zinc-600">Model</p>
 
           <div class="p-1">
-            <button type="button" class="flex w-full items-center gap-2 rounded-md bg-white/[0.06] px-2 py-1.5 text-left text-[12.5px] text-white">
+            <button type="button" data-url="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf" data-name="qwen2.5-0.5b-instruct-q4_k_m.gguf" class="model-download-btn flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-400 transition hover:bg-white/[0.04] hover:text-white">
+              <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-line bg-base font-mono text-[9px] text-zinc-400">Q</span>
+              <span class="truncate">Qwen 2.5 0.5B</span>
+              <span class="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">Q4 · 400MB</span>
+            </button>
+
+            <button type="button" data-url="https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf" data-name="Llama-3.2-1B-Instruct-Q4_K_M.gguf" class="model-download-btn flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-400 transition hover:bg-white/[0.04] hover:text-white">
               <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-line bg-base">
                 <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <path fill="#ffffff" fill-rule="evenodd" clip-rule="evenodd" d="M7.6 2.2c.6-.2 1.2.2 1.3.8l.5 2.9c.9-.4 1.7-.6 2.6-.6s1.7.2 2.6.6l.5-2.9c.1-.6.7-1 1.3-.8.6.2 1 .8.8 1.4l-.5 3.1c1.5 1.1 2.4 2.8 2.4 4.7 0 2.2-1.2 4.1-3 5.2l-.5 4.2c-.1 1.4-1.3 2.5-2.7 2.5h-2.2c-1.4 0-2.6-1.1-2.7-2.5l-.5-4.2c-1.8-1.1-3-3-3-5.2 0-1.9.9-3.6 2.4-4.7l-.5-3.1c-.2-.6.2-1.2.8-1.4Zm2.3 9.6a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Zm4.2 0a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Z"/>
                 </svg>
               </span>
               <span class="truncate">Llama 3.2 1B</span>
-              <span class="ml-auto shrink-0 font-mono text-[10px] text-zinc-500">Q4 · 780MB</span>
-              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><polyline points="20 6 9 17 4 12"/></svg>
+              <span class="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">Q4 · 780MB</span>
             </button>
 
-            <button type="button" class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-400 transition hover:bg-white/[0.04] hover:text-white">
-              <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-line bg-base font-mono text-[9px] text-zinc-400">Q</span>
-              <span class="truncate">Qwen 2.5 1.5B</span>
-              <span class="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">Q4 · 1.1GB</span>
-            </button>
-
-            <button type="button" class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-400 transition hover:bg-white/[0.04] hover:text-white">
-              <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-line bg-base font-mono text-[9px] text-zinc-400">Φ</span>
-              <span class="truncate">Phi 3.5 Mini</span>
-              <span class="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">Q4 · 2.2GB</span>
-            </button>
-
-            <button type="button" class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-500 transition hover:bg-white/[0.04] hover:text-white">
+            <button type="button" id="local-model-btn" class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-500 transition hover:bg-white/[0.04] hover:text-white">
               <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-dashed border-line bg-base">
                 <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               </span>
@@ -227,7 +220,7 @@
           Offline
         </span>
 
-        <button type="button" class="flex h-8 w-8 items-center justify-center rounded-md text-zinc-400 transition hover:bg-white/5 hover:text-white" aria-label="Settings">
+        <button type="button" id="settings-btn" class="flex h-8 w-8 items-center justify-center rounded-md text-zinc-400 transition hover:bg-white/5 hover:text-white" aria-label="Settings">
           <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
       </div>
@@ -236,6 +229,10 @@
     <!-- Chat scroll area -->
     <div id="chat-container" class="scroll-thin relative min-h-0 flex-1 overflow-y-auto">
       <div class="grid-fade pointer-events-none absolute inset-x-0 top-0 h-56"></div>
+      <div id="empty-state" class="flex flex-col items-center justify-center h-full text-center space-y-4">
+        <div class="text-zinc-500 text-sm font-mono">No local model loaded.</div>
+        <button id="main-load-btn" class="bg-white text-black px-4 py-2 rounded-md font-semibold text-sm">Load .gguf Model manually</button>
+      </div>
       <div id="messages" class="relative mx-auto w-full max-w-3xl px-4 pb-10 pt-8 sm:px-6"></div>
     </div>
 
@@ -250,16 +247,12 @@
                     class="scroll-thin block max-h-40 w-full resize-none bg-transparent px-3.5 pb-1 pt-3 font-mono text-[13.5px] leading-[1.65] text-white outline-none placeholder:text-zinc-600"></textarea>
 
           <div class="flex items-center gap-1 px-2 pb-2 pt-1">
-            <button type="button" id="attach-btn" class="flex h-8 w-8 items-center justify-center rounded-md text-zinc-500 transition hover:bg-white/5 hover:text-white" aria-label="Attach file">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-            </button>
-
             <!-- Active model chip: MODEL LOGO -->
             <span class="ml-1 flex items-center gap-1.5 rounded-md border border-line px-1.5 py-[3px] font-mono text-[10px] uppercase tracking-[0.1em] text-zinc-500">
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path fill="#a1a1aa" fill-rule="evenodd" clip-rule="evenodd" d="M7.6 2.2c.6-.2 1.2.2 1.3.8l.5 2.9c.9-.4 1.7-.6 2.6-.6s1.7.2 2.6.6l.5-2.9c.1-.6.7-1 1.3-.8.6.2 1 .8.8 1.4l-.5 3.1c1.5 1.1 2.4 2.8 2.4 4.7 0 2.2-1.2 4.1-3 5.2l-.5 4.2c-.1 1.4-1.3 2.5-2.7 2.5h-2.2c-1.4 0-2.6-1.1-2.7-2.5l-.5-4.2c-1.8-1.1-3-3-3-5.2 0-1.9.9-3.6 2.4-4.7l-.5-3.1c-.2-.6.2-1.2.8-1.4Zm2.3 9.6a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Zm4.2 0a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Z"/>
               </svg>
-              Llama 3.2 1B
+              <span id="active-model-chip">No model</span>
             </span>
 
             <button type="button" id="send-btn"

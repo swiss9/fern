@@ -14,8 +14,13 @@ const getPlugins = () => {
   return {
     LlamaCpp: window.Capacitor.Plugins.LlamaCpp,
     FilePicker: window.Capacitor.Plugins.FilePicker,
+    Filesystem: window.Capacitor.Plugins.Filesystem,
   };
 };
+
+// Filesystem.Directory.Data === 'DATA'. The plugin's enum is not exposed on
+// the global bridge, so keep the value local.
+const Directory = { Data: 'DATA' };
 
 // ============================================================
 // 2. UI ELEMENTS
@@ -27,6 +32,10 @@ const sendBtn = document.getElementById('send-btn');
 const overlay = document.getElementById('loading-overlay');
 const progressText = document.getElementById('progress-text');
 const progressBar = document.getElementById('progress-bar');
+const emptyState = document.getElementById('empty-state');
+const mainLoadBtn = document.getElementById('main-load-btn');
+const settingsBtn = document.getElementById('settings-btn');
+const newChatBtn = document.getElementById('new-chat-btn');
 
 // ============================================================
 // 3. STATE
@@ -64,6 +73,20 @@ function setSendEnabled(enabled) {
   }
 }
 
+function showEmptyState() {
+  emptyState.classList.remove('hidden');
+}
+
+function hideEmptyState() {
+  emptyState.classList.add('hidden');
+}
+
+function setModelLabels(name) {
+  document.getElementById('sidebar-model-label').innerText = name || 'No model';
+  document.getElementById('active-model-chip').innerText = name || 'No model';
+  inputEl.placeholder = name ? 'Message ' + name + '...' : 'Message local model...';
+}
+
 function escapeHtml(str) {
   return String(str)
     .replaceAll('&', '&amp;')
@@ -90,7 +113,7 @@ async function loadModelFile(modelPath, notify) {
   // open directly. Try the path first, then the bare filename, which the
   // native side resolves against Download/, Documents/ and app dirs.
   const candidates = [
-    modelPath.replace(/^content:\/\//, ''),
+    modelPath.replace(/^(content|file):\/\//, ''),
     modelName,
   ];
 
@@ -116,27 +139,91 @@ async function loadModelFile(modelPath, notify) {
   throw lastError || new Error('Could not initialize model context');
 }
 
-async function pickAndLoadModel() {
-  overlay.classList.remove('hidden');
-  overlay.style.display = 'flex';
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      resolve(result.slice(result.indexOf(',') + 1));
+    };
+    reader.onerror = () => reject(reader.error || new Error('Could not read downloaded data'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function downloadAndLoadModel(url, filename) {
+  showOverlay('Downloading ' + filename + '...');
+  progressBar.style.width = '0%';
   setSendEnabled(false);
-  const { LlamaCpp, FilePicker } = getPlugins();
-  showOverlay('Selecting model file...');
+
   try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error('Download failed: HTTP ' + response.status);
+    }
+
+    const contentLength = Number(response.headers.get('Content-Length')) || 0;
+    const reader = response.body.getReader();
+    const chunks = [];
+    let received = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.length;
+
+      const mb = (received / 1048576).toFixed(1);
+      if (contentLength > 0) {
+        const percent = Math.min(100, Math.round((received / contentLength) * 100));
+        progressText.innerText = 'Downloading ' + filename + ': ' + percent + '% (' + mb + ' MB)';
+        progressBar.style.width = percent + '%';
+      } else {
+        progressText.innerText = 'Downloading ' + filename + ': ' + mb + ' MB';
+      }
+    }
+
+    const blob = new Blob(chunks, { type: 'application/octet-stream' });
+    showOverlay('Saving ' + filename + '...');
+    const base64Data = await blobToBase64(blob);
+
+    const { Filesystem } = getPlugins();
+    const saved = await Filesystem.writeFile({
+      path: filename,
+      data: base64Data,
+      directory: Directory.Data,
+      recursive: true,
+    });
+
+    modelName = filename;
+    showOverlay('Loading ' + filename + ' (this can take a while)...');
+    await loadModelFile(saved.uri || filename);
+    onModelReady();
+  } catch (error) {
+    console.error('Model download failed:', error);
+    showOverlay('Failed to load model: ' + (error.message || String(error)));
+    progressText.classList.add('text-red-400');
+  }
+}
+
+async function pickAndLoadModel() {
+  setSendEnabled(false);
+  showOverlay('Selecting model file...');
+
+  try {
+    const { FilePicker } = getPlugins();
     const result = await FilePicker.pickFiles({
       types: ['application/octet-stream'],
       limit: 1,
     });
     const file = result.files && result.files[0];
     if (!file) {
-      overlay.classList.add('hidden');
-      overlay.style.display = 'none';
+      hideOverlay();
       return;
     }
     if (!file.name || !/\.gguf$/i.test(file.name)) {
-      overlay.classList.add('hidden');
-      overlay.style.display = 'none';
-      appendMessage('assistant', 'That file is not a .gguf model. Please tap the paperclip and pick a .gguf file.');
+      hideOverlay();
+      appendMessage('assistant', 'That file is not a .gguf model. Please select a .gguf file.');
       return;
     }
     modelName = file.name;
@@ -144,8 +231,13 @@ async function pickAndLoadModel() {
     await loadModelFile(file.path || file.name);
     onModelReady();
   } catch (error) {
+    const message = String((error && error.message) || error || '');
+    if (/cancel/i.test(message)) {
+      hideOverlay();
+      return;
+    }
     console.error('Model load failed:', error);
-    showOverlay('Failed to load model: ' + (error.message || String(error)));
+    showOverlay('Failed to load model: ' + message);
     progressText.classList.add('text-red-400');
   }
 }
@@ -168,14 +260,15 @@ async function initModel() {
     console.warn('getAvailableModels failed, falling back to picker:', e);
   }
 
-  overlay.classList.add('hidden');
-  overlay.style.display = 'none';
-  appendMessage('assistant', 'No local model found. Please tap the paperclip icon below to select a .gguf file.');
+  hideOverlay();
+  showEmptyState();
 }
 
 function onModelReady() {
   contextReady = true;
   hideOverlay();
+  hideEmptyState();
+  setModelLabels(modelName);
   if (activeListener) activeListener.remove();
   activeListener = null;
   setSendEnabled(true);
@@ -298,7 +391,6 @@ async function generateResponse(userPrompt) {
 // 7. EVENT LISTENERS
 // ============================================================
 sendBtn.addEventListener('click', () => {
-  alert("Send clicked!");
   const text = inputEl.value.trim();
   if (text) generateResponse(text);
 });
@@ -316,11 +408,47 @@ inputEl.addEventListener('input', () => {
   inputEl.style.height = inputEl.scrollHeight + 'px';
 });
 
-// FILE PICKER BINDING (paperclip button)
-document.getElementById('attach-btn').addEventListener('click', () => {
-  alert("Paperclip clicked!");
-  console.log("Paperclip clicked");
+// MANUAL MODEL LOADING
+mainLoadBtn.addEventListener('click', () => {
   pickAndLoadModel();
+});
+
+document.getElementById('local-model-btn').addEventListener('click', () => {
+  pickAndLoadModel();
+});
+
+// RECOMMENDED MODEL DOWNLOADS
+document.querySelectorAll('.model-download-btn').forEach((button) => {
+  button.addEventListener('click', () => {
+    const url = button.dataset.url;
+    const name = button.dataset.name;
+    const details = button.closest('details');
+    if (details) details.open = false;
+    if (url && name) downloadAndLoadModel(url, name);
+  });
+});
+
+// SIDEBAR MODEL DROPDOWN
+document.querySelectorAll('details').forEach((details) => {
+  details.addEventListener('toggle', () => {
+    if (details.open) {
+      document.querySelectorAll('details').forEach((other) => {
+        if (other !== details) other.open = false;
+      });
+    }
+  });
+});
+
+// SETTINGS
+settingsBtn.addEventListener('click', () => {
+  alert("Settings coming soon!");
+});
+
+// NEW CHAT
+newChatBtn.addEventListener('click', () => {
+  chatHistory = [];
+  messagesEl.innerHTML = '';
+  showEmptyState();
 });
 
 // ============================================================

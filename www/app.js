@@ -15,6 +15,8 @@ const getPlugins = () => {
     LlamaCpp: window.Capacitor.Plugins.LlamaCpp,
     FilePicker: window.Capacitor.Plugins.FilePicker,
     Filesystem: window.Capacitor.Plugins.Filesystem,
+    LocalNotifications: window.Capacitor.Plugins.LocalNotifications,
+    Device: window.Capacitor.Plugins.Device,
   };
 };
 
@@ -33,15 +35,23 @@ const overlay = document.getElementById('loading-overlay');
 const progressText = document.getElementById('progress-text');
 const progressBar = document.getElementById('progress-bar');
 const emptyState = document.getElementById('empty-state');
+const emptyStateText = document.getElementById('empty-state-text');
 const mainLoadBtn = document.getElementById('main-load-btn');
 const settingsBtn = document.getElementById('settings-btn');
 const newChatBtn = document.getElementById('new-chat-btn');
+const storageUsage = document.getElementById('storage-usage');
+const storageLocationText = document.getElementById('storage-location-text');
+const settingsModal = document.getElementById('settings-modal');
+const closeSettingsBtn = document.getElementById('close-settings-btn');
+const clearDataBtn = document.getElementById('clear-data-btn');
 
 // ============================================================
 // 3. STATE
 // ============================================================
 const CONTEXT_ID = 1;
 const N_THREADS = Math.max(2, (navigator.hardwareConcurrency || 4) - 1);
+const DOWNLOAD_NOTIFICATION_ID = 1001;
+const RESPONSE_NOTIFICATION_ID = 1002;
 let contextReady = false;
 let isGenerating = false;
 let chatHistory = [];
@@ -73,8 +83,19 @@ function setSendEnabled(enabled) {
   }
 }
 
+function setEmptyStateMessage(text) {
+  emptyStateText.innerText = text;
+}
+
 function showEmptyState() {
   emptyState.classList.remove('hidden');
+  if (contextReady && modelName) {
+    setEmptyStateMessage('Ready. Ask ' + modelName + ' anything.');
+    mainLoadBtn.classList.add('hidden');
+  } else {
+    setEmptyStateMessage('No local model loaded.');
+    mainLoadBtn.classList.remove('hidden');
+  }
 }
 
 function hideEmptyState() {
@@ -83,8 +104,208 @@ function hideEmptyState() {
 
 function setModelLabels(name) {
   document.getElementById('sidebar-model-label').innerText = name || 'No model';
-  document.getElementById('active-model-chip').innerText = name || 'No model';
-  inputEl.placeholder = name ? 'Message ' + name + '...' : 'Message local model...';
+  document.getElementById('active-model-chip').innerText = name ? name.toUpperCase() : 'NO MODEL';
+}
+
+function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return '0 MB';
+  const mb = bytes / 1048576;
+  if (mb >= 1024) return (mb / 1024).toFixed(2) + ' GB';
+  return mb.toFixed(mb >= 100 ? 0 : 1) + ' MB';
+}
+
+// ============================================================
+// 4. PERMISSIONS, NOTIFICATIONS & STORAGE
+// ============================================================
+async function requestStartupPermissions() {
+  try {
+    const { LocalNotifications, Device, Filesystem } = getPlugins();
+
+    if (LocalNotifications) {
+      try {
+        const status = await LocalNotifications.checkPermissions();
+        if (status.display !== 'granted') {
+          await LocalNotifications.requestPermissions();
+        }
+      } catch (error) {
+        console.warn('Notification permission unavailable:', error);
+      }
+    }
+
+    if (Device && Filesystem) {
+      try {
+        const info = await Device.getInfo();
+        const androidVersion = parseInt(String(info.osVersion || '').split('.')[0], 10);
+        if (info.platform === 'android' && androidVersion <= 12) {
+          const status = await Filesystem.checkPermissions();
+          if (status.publicStorage !== 'granted') {
+            await Filesystem.requestPermissions();
+          }
+        }
+      } catch (error) {
+        console.warn('Storage permission unavailable:', error);
+      }
+    }
+  } catch (error) {
+    console.warn('Permission setup unavailable:', error);
+  }
+}
+
+async function showDownloadingNotification(filename) {
+  try {
+    const { LocalNotifications } = getPlugins();
+    if (!LocalNotifications) return;
+    try {
+      await LocalNotifications.cancel({ notifications: [{ id: DOWNLOAD_NOTIFICATION_ID }] });
+    } catch (error) {}
+    await LocalNotifications.schedule({
+      notifications: [{
+        id: DOWNLOAD_NOTIFICATION_ID,
+        title: 'Downloading Model...',
+        body: filename,
+        ongoing: true,
+        autoCancel: false,
+        isExactNotification: false,
+      }],
+    });
+  } catch (error) {
+    console.warn('Could not show download notification:', error);
+  }
+}
+
+async function showModelReadyNotification(filename) {
+  try {
+    const { LocalNotifications } = getPlugins();
+    if (!LocalNotifications) return;
+    try {
+      await LocalNotifications.cancel({ notifications: [{ id: DOWNLOAD_NOTIFICATION_ID }] });
+    } catch (error) {}
+    await LocalNotifications.schedule({
+      notifications: [{
+        id: DOWNLOAD_NOTIFICATION_ID,
+        title: 'Model Ready!',
+        body: filename + ' loaded. Fern is ready to chat.',
+        autoCancel: true,
+        isExactNotification: false,
+      }],
+    });
+  } catch (error) {
+    console.warn('Could not update download notification:', error);
+  }
+}
+
+async function clearDownloadNotification() {
+  try {
+    const { LocalNotifications } = getPlugins();
+    if (!LocalNotifications) return;
+    await LocalNotifications.cancel({ notifications: [{ id: DOWNLOAD_NOTIFICATION_ID }] });
+  } catch (error) {
+    console.warn('Could not clear download notification:', error);
+  }
+}
+
+async function notifyBackgroundResponse(text) {
+  if (document.visibilityState !== 'hidden' || !text) return;
+  try {
+    const { LocalNotifications } = getPlugins();
+    if (!LocalNotifications) return;
+    const body = text.trim().slice(0, 50) + (text.trim().length > 50 ? '…' : '');
+    await LocalNotifications.schedule({
+      notifications: [{
+        id: RESPONSE_NOTIFICATION_ID,
+        title: 'Fern',
+        body,
+        autoCancel: true,
+        isExactNotification: false,
+      }],
+    });
+  } catch (error) {
+    console.warn('Could not show response notification:', error);
+  }
+}
+
+async function updateStorageMeter() {
+  try {
+    const { Filesystem } = getPlugins();
+    if (!Filesystem) return;
+    const result = await Filesystem.readdir({ path: '', directory: Directory.Data });
+    const total = result.files
+      .filter((file) => file.type === 'file' && /\.gguf$/i.test(file.name))
+      .reduce((sum, file) => sum + (file.size || 0), 0);
+    storageUsage.innerText = total > 0 ? formatBytes(total) : 'No models';
+  } catch (error) {
+    storageUsage.innerText = '';
+  }
+}
+
+async function updateStorageLocation() {
+  try {
+    const { Filesystem } = getPlugins();
+    if (!Filesystem) return;
+    const result = await Filesystem.getUri({ path: '', directory: Directory.Data });
+    storageLocationText.innerText = result.uri || 'App private storage (Directory.Data)';
+    storageLocationText.title = result.uri || '';
+  } catch (error) {
+    storageLocationText.innerText = 'App private storage (Directory.Data)';
+  }
+}
+
+function openSettings() {
+  settingsModal.style.display = 'flex';
+  updateStorageMeter();
+  updateStorageLocation();
+}
+
+function closeSettings() {
+  settingsModal.style.display = 'none';
+}
+
+async function clearAppData() {
+  if (!confirm('Delete all downloaded models and clear the current chat?')) return;
+
+  try {
+    const { Filesystem, LlamaCpp } = getPlugins();
+
+    if (activeListener) {
+      try { await activeListener.remove(); } catch (error) {}
+      activeListener = null;
+    }
+    if (LlamaCpp) {
+      try { await LlamaCpp.releaseAllContexts(); } catch (error) {}
+    }
+
+    if (Filesystem) {
+      try {
+        const result = await Filesystem.readdir({ path: '', directory: Directory.Data });
+        for (const file of result.files) {
+          if (file.type === 'file' && /\.gguf$/i.test(file.name)) {
+            try {
+              await Filesystem.deleteFile({ path: file.name, directory: Directory.Data });
+            } catch (error) {
+              console.warn('Could not delete ' + file.name + ':', error);
+            }
+          }
+        }
+      } catch (error) {
+        console.warn('Could not list app data:', error);
+      }
+    }
+
+    contextReady = false;
+    isGenerating = false;
+    modelName = '';
+    chatHistory = [];
+    messagesEl.innerHTML = '';
+    setModelLabels('');
+    setSendEnabled(false);
+    await clearDownloadNotification();
+    await updateStorageMeter();
+    await updateStorageLocation();
+    showEmptyState();
+    closeSettings();
+  } catch (error) {
+    console.error('Clear app data failed:', error);
+  }
 }
 
 function escapeHtml(str) {
@@ -155,6 +376,7 @@ async function downloadAndLoadModel(url, filename) {
   showOverlay('Downloading ' + filename + '...');
   progressBar.style.width = '0%';
   setSendEnabled(false);
+  showDownloadingNotification(filename);
 
   try {
     const response = await fetch(url);
@@ -199,10 +421,17 @@ async function downloadAndLoadModel(url, filename) {
     showOverlay('Loading ' + filename + ' (this can take a while)...');
     await loadModelFile(saved.uri || filename);
     onModelReady();
+    updateStorageMeter();
+    showModelReadyNotification(filename);
   } catch (error) {
     console.error('Model download failed:', error);
-    showOverlay('Failed to load model: ' + (error.message || String(error)));
-    progressText.classList.add('text-red-400');
+    await clearDownloadNotification();
+    hideOverlay();
+    setSendEnabled(contextReady);
+    if (!contextReady) {
+      showEmptyState();
+      setEmptyStateMessage('Download failed. Tap a model to retry, or load a .gguf file.');
+    }
   }
 }
 
@@ -374,6 +603,7 @@ async function generateResponse(userPrompt) {
         bubbleText.innerText = '[Empty response]';
       }
     }
+    notifyBackgroundResponse(fullText || bubbleText.innerText);
     chatContainer.scrollTop = chatContainer.scrollHeight;
   } catch (error) {
     console.error('Generation error:', error);
@@ -440,9 +670,12 @@ document.querySelectorAll('details').forEach((details) => {
 });
 
 // SETTINGS
-settingsBtn.addEventListener('click', () => {
-  alert("Settings coming soon!");
+settingsBtn.addEventListener('click', openSettings);
+closeSettingsBtn.addEventListener('click', closeSettings);
+settingsModal.addEventListener('click', (event) => {
+  if (event.target === settingsModal) closeSettings();
 });
+clearDataBtn.addEventListener('click', clearAppData);
 
 // NEW CHAT
 newChatBtn.addEventListener('click', () => {
@@ -457,6 +690,9 @@ newChatBtn.addEventListener('click', () => {
 window.addEventListener('DOMContentLoaded', () => {
   try {
     setSendEnabled(false);
+    requestStartupPermissions();
+    updateStorageMeter();
+    updateStorageLocation();
     initModel().catch((error) => {
       console.error('Init error:', error);
       alert("Init Error: " + (error && error.message ? error.message : String(error)));

@@ -1,6 +1,9 @@
 console.log("App.js loaded");
 window.onerror = function(msg, url, line, col, error) {
-  alert("JS Error: " + msg + "\nLine: " + line);
+  console.error('JS Error:', msg, 'line', line, error);
+  if (typeof showErrorOverlay === 'function') {
+    showErrorOverlay('Unexpected error', msg + ' (line ' + line + ')');
+  }
   return false;
 };
 
@@ -17,12 +20,13 @@ const getPlugins = () => {
     Filesystem: window.Capacitor.Plugins.Filesystem,
     LocalNotifications: window.Capacitor.Plugins.LocalNotifications,
     Device: window.Capacitor.Plugins.Device,
+    CapacitorDownloader: window.Capacitor.Plugins.CapacitorDownloader,
+    Preferences: window.Capacitor.Plugins.Preferences,
   };
 };
 
-// Filesystem.Directory.Data === 'DATA'. The plugin's enum is not exposed on
-// the global bridge, so keep the value local.
-const Directory = { Data: 'DATA' };
+// Filesystem.Directory enum values are not exposed on the global bridge.
+const Directory = { Data: 'DATA', External: 'EXTERNAL' };
 
 // ============================================================
 // 2. UI ELEMENTS
@@ -44,6 +48,22 @@ const storageLocationText = document.getElementById('storage-location-text');
 const settingsModal = document.getElementById('settings-modal');
 const closeSettingsBtn = document.getElementById('close-settings-btn');
 const clearDataBtn = document.getElementById('clear-data-btn');
+const errorOverlay = document.getElementById('error-overlay');
+const errorTitle = document.getElementById('error-title');
+const errorMessage = document.getElementById('error-message');
+const closeErrorBtn = document.getElementById('close-error-btn');
+const errorDismissBtn = document.getElementById('error-dismiss-btn');
+const attachBtn = document.getElementById('attach-btn');
+const temperatureSlider = document.getElementById('temperature-slider');
+const temperatureValue = document.getElementById('temperature-value');
+const maxTokensSlider = document.getElementById('max-tokens-slider');
+const maxTokensValue = document.getElementById('max-tokens-value');
+const modelList = document.getElementById('model-list');
+const modelListEmpty = document.getElementById('model-list-empty');
+const deleteAllModelsBtn = document.getElementById('delete-all-models-btn');
+const settingsStorageTotal = document.getElementById('settings-storage-total');
+const appVersionEl = document.getElementById('app-version');
+const sidebarVersionEl = document.getElementById('sidebar-version');
 
 // ============================================================
 // 3. STATE
@@ -52,6 +72,9 @@ const CONTEXT_ID = 1;
 const N_THREADS = Math.max(2, (navigator.hardwareConcurrency || 4) - 1);
 const DOWNLOAD_NOTIFICATION_ID = 1001;
 const RESPONSE_NOTIFICATION_ID = 1002;
+const SETTINGS_KEY = 'fern.settings';
+const DEFAULT_SETTINGS = { temperature: 0.7, maxTokens: 512 };
+let appSettings = { ...DEFAULT_SETTINGS };
 let contextReady = false;
 let isGenerating = false;
 let chatHistory = [];
@@ -72,6 +95,40 @@ function hideOverlay() {
   overlay.style.display = 'none';
   overlay.style.opacity = '0';
   overlay.style.pointerEvents = 'none';
+}
+
+function showErrorOverlay(title, message) {
+  errorTitle.innerText = title || 'Something went wrong';
+  errorMessage.innerText = String(message || 'Unknown error');
+  errorOverlay.classList.remove('hidden');
+  errorOverlay.style.display = 'flex';
+}
+
+function closeErrorOverlay() {
+  errorOverlay.classList.add('hidden');
+  errorOverlay.style.display = 'none';
+  hideOverlay();
+  resetToNoModelState();
+}
+
+function resetToNoModelState() {
+  contextReady = false;
+  modelName = '';
+  setModelLabels('');
+  setSendEnabled(false);
+  setMultimodalSupport(false);
+  showEmptyState();
+  setEmptyStateMessage('No local model loaded.');
+}
+
+function isMultimodalModel(name) {
+  return /(llava|vision|multimodal|moondream|bakllava|qwen[-\s]?vl|minicpm[-\s]?v|pixtral|idefics|internvl|gemma[-\s]?3)/i.test(name || '');
+}
+
+function setMultimodalSupport(enabled) {
+  if (!attachBtn) return;
+  attachBtn.classList.toggle('hidden', !enabled);
+  attachBtn.classList.toggle('flex', !!enabled);
 }
 
 function setSendEnabled(enabled) {
@@ -103,8 +160,10 @@ function hideEmptyState() {
 }
 
 function setModelLabels(name) {
-  document.getElementById('sidebar-model-label').innerText = name || 'No model';
+  const label = name || 'No model';
+  document.getElementById('sidebar-model-label').innerText = label;
   document.getElementById('active-model-chip').innerText = name ? name.toUpperCase() : 'NO MODEL';
+  setMultimodalSupport(!!name && isMultimodalModel(name));
 }
 
 function formatBytes(bytes) {
@@ -224,17 +283,76 @@ async function notifyBackgroundResponse(text) {
   }
 }
 
+function clampNumber(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+async function getInstalledModels() {
+  const { Filesystem } = getPlugins();
+  if (!Filesystem) return [];
+  const result = await Filesystem.readdir({ path: '', directory: Directory.Data });
+  const models = [];
+  for (const file of result.files || []) {
+    if (file.type !== 'file' || !/\.gguf$/i.test(file.name)) continue;
+    let size = Number(file.size) || 0;
+    try {
+      const stat = await Filesystem.stat({ path: file.name, directory: Directory.Data });
+      size = Number(stat.size) || size;
+    } catch (error) {
+      console.warn('Could not stat ' + file.name + ':', error);
+    }
+    models.push({ name: file.name, size });
+  }
+  models.sort((a, b) => a.name.localeCompare(b.name));
+  return models;
+}
+
+function renderModelList(models) {
+  if (!modelList) return;
+  if (!models.length) {
+    modelList.innerHTML = '<p class="rounded-md border border-line bg-base px-3 py-3 text-center font-mono text-[11px] text-zinc-600">No models installed.</p>';
+    return;
+  }
+
+  modelList.innerHTML = models.map((model) => (
+    '<div class="flex items-center gap-3 rounded-md border border-line bg-base px-3 py-2.5">' +
+      '<div class="min-w-0 flex-1">' +
+        '<p class="truncate font-mono text-[11.5px] text-zinc-200">' + escapeHtml(model.name) + '</p>' +
+        '<p class="mt-0.5 font-mono text-[10px] text-zinc-600">' + formatBytes(model.size) + '</p>' +
+      '</div>' +
+      '<button type="button" data-delete-model="' + escapeHtml(model.name) + '" class="shrink-0 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1.5 text-[11px] font-medium text-red-300 transition hover:bg-red-500/20">Delete</button>' +
+    '</div>'
+  )).join('');
+}
+
+async function refreshModelManager() {
+  try {
+    const models = await getInstalledModels();
+    renderModelList(models);
+    const total = models.reduce((sum, model) => sum + model.size, 0);
+    if (settingsStorageTotal) settingsStorageTotal.innerText = formatBytes(total);
+    if (storageUsage) storageUsage.innerText = total > 0 ? formatBytes(total) : 'No models';
+    return models;
+  } catch (error) {
+    console.warn('Could not list models:', error);
+    renderModelList([]);
+    if (settingsStorageTotal) settingsStorageTotal.innerText = 'Unavailable';
+    return [];
+  }
+}
+
 async function updateStorageMeter() {
   try {
-    const { Filesystem } = getPlugins();
-    if (!Filesystem) return;
-    const result = await Filesystem.readdir({ path: '', directory: Directory.Data });
-    const total = result.files
-      .filter((file) => file.type === 'file' && /\.gguf$/i.test(file.name))
-      .reduce((sum, file) => sum + (file.size || 0), 0);
+    const models = await getInstalledModels();
+    const total = models.reduce((sum, model) => sum + model.size, 0);
     storageUsage.innerText = total > 0 ? formatBytes(total) : 'No models';
+    if (settingsStorageTotal) settingsStorageTotal.innerText = formatBytes(total);
+    return total;
   } catch (error) {
     storageUsage.innerText = '';
+    return 0;
   }
 }
 
@@ -250,61 +368,167 @@ async function updateStorageLocation() {
   }
 }
 
-function openSettings() {
+function applySettingsToControls() {
+  if (temperatureSlider) temperatureSlider.value = String(appSettings.temperature);
+  if (temperatureValue) temperatureValue.innerText = appSettings.temperature.toFixed(1);
+  if (maxTokensSlider) maxTokensSlider.value = String(appSettings.maxTokens);
+  if (maxTokensValue) maxTokensValue.innerText = String(appSettings.maxTokens);
+}
+
+async function loadSettings() {
+  try {
+    const { Preferences } = getPlugins();
+    if (Preferences) {
+      const { value } = await Preferences.get({ key: SETTINGS_KEY });
+      if (value) {
+        const parsed = JSON.parse(value);
+        appSettings.temperature = clampNumber(parsed.temperature, 0, 1, DEFAULT_SETTINGS.temperature);
+        appSettings.maxTokens = Math.round(clampNumber(parsed.maxTokens, 128, 2048, DEFAULT_SETTINGS.maxTokens));
+      }
+    }
+  } catch (error) {
+    console.warn('Could not load settings:', error);
+  }
+  applySettingsToControls();
+}
+
+async function saveSettings() {
+  try {
+    const { Preferences } = getPlugins();
+    if (!Preferences) return;
+    await Preferences.set({ key: SETTINGS_KEY, value: JSON.stringify(appSettings) });
+  } catch (error) {
+    console.warn('Could not save settings:', error);
+  }
+}
+
+async function updateAppVersion() {
+  let version = '1.5.0';
+  try {
+    const { Device } = getPlugins();
+    if (Device) {
+      const info = await Device.getInfo();
+      if (info && info.appVersion) version = info.appVersion;
+    }
+  } catch (error) {}
+  if (appVersionEl) appVersionEl.innerText = version;
+  if (sidebarVersionEl) sidebarVersionEl.innerText = 'v' + version.split('.').slice(0, 2).join('.');
+}
+
+async function openSettings() {
+  settingsModal.classList.remove('hidden');
   settingsModal.style.display = 'flex';
-  updateStorageMeter();
-  updateStorageLocation();
+  await Promise.all([
+    loadSettings(),
+    refreshModelManager(),
+    updateStorageLocation(),
+    updateAppVersion(),
+  ]);
 }
 
 function closeSettings() {
   settingsModal.style.display = 'none';
 }
 
+async function releaseLoadedModel() {
+  const { LlamaCpp } = getPlugins();
+  if (activeListener) {
+    try { await activeListener.remove(); } catch (error) {}
+    activeListener = null;
+  }
+  if (LlamaCpp) {
+    try { await LlamaCpp.releaseAllContexts(); } catch (error) {}
+  }
+  contextReady = false;
+  isGenerating = false;
+  setSendEnabled(false);
+  setMultimodalSupport(false);
+}
+
+async function deleteModel(filename) {
+  if (!confirm('Delete ' + filename + '?')) return;
+  const { Filesystem } = getPlugins();
+  const deletingActive = modelName === filename;
+
+  if (deletingActive) await releaseLoadedModel();
+
+  try {
+    await Filesystem.deleteFile({ path: filename, directory: Directory.Data });
+  } catch (error) {
+    console.error('Could not delete model:', error);
+    showErrorOverlay('Delete failed', error && error.message ? error.message : String(error));
+    return;
+  }
+
+  if (deletingActive) {
+    modelName = '';
+    setModelLabels('');
+    showEmptyState();
+    setEmptyStateMessage('No local model loaded.');
+  }
+  await refreshModelManager();
+}
+
+async function deleteAllModels() {
+  if (!confirm('Delete every downloaded model? This cannot be undone.')) return;
+  const { Filesystem } = getPlugins();
+
+  await releaseLoadedModel();
+
+  let models = [];
+  try {
+    models = await getInstalledModels();
+  } catch (error) {
+    console.warn('Could not list models:', error);
+  }
+
+  for (const model of models) {
+    try {
+      await Filesystem.deleteFile({ path: model.name, directory: Directory.Data });
+    } catch (error) {
+      console.warn('Could not delete ' + model.name + ':', error);
+    }
+  }
+
+  modelName = '';
+  setModelLabels('');
+  showEmptyState();
+  setEmptyStateMessage('No local model loaded.');
+  await refreshModelManager();
+  await clearDownloadNotification();
+}
+
 async function clearAppData() {
   if (!confirm('Delete all downloaded models and clear the current chat?')) return;
 
   try {
-    const { Filesystem, LlamaCpp } = getPlugins();
+    await releaseLoadedModel();
 
-    if (activeListener) {
-      try { await activeListener.remove(); } catch (error) {}
-      activeListener = null;
-    }
-    if (LlamaCpp) {
-      try { await LlamaCpp.releaseAllContexts(); } catch (error) {}
-    }
-
+    const { Filesystem } = getPlugins();
     if (Filesystem) {
-      try {
-        const result = await Filesystem.readdir({ path: '', directory: Directory.Data });
-        for (const file of result.files) {
-          if (file.type === 'file' && /\.gguf$/i.test(file.name)) {
-            try {
-              await Filesystem.deleteFile({ path: file.name, directory: Directory.Data });
-            } catch (error) {
-              console.warn('Could not delete ' + file.name + ':', error);
-            }
-          }
+      const models = await getInstalledModels();
+      for (const model of models) {
+        try {
+          await Filesystem.deleteFile({ path: model.name, directory: Directory.Data });
+        } catch (error) {
+          console.warn('Could not delete ' + model.name + ':', error);
         }
-      } catch (error) {
-        console.warn('Could not list app data:', error);
       }
     }
 
-    contextReady = false;
-    isGenerating = false;
     modelName = '';
     chatHistory = [];
     messagesEl.innerHTML = '';
     setModelLabels('');
-    setSendEnabled(false);
     await clearDownloadNotification();
-    await updateStorageMeter();
+    await refreshModelManager();
     await updateStorageLocation();
     showEmptyState();
+    setEmptyStateMessage('No local model loaded.');
     closeSettings();
   } catch (error) {
     console.error('Clear app data failed:', error);
+    showErrorOverlay('Clear failed', error && error.message ? error.message : String(error));
   }
 }
 
@@ -360,78 +584,189 @@ async function loadModelFile(modelPath, notify) {
   throw lastError || new Error('Could not initialize model context');
 }
 
-function blobToBase64(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result || '');
-      resolve(result.slice(result.indexOf(',') + 1));
-    };
-    reader.onerror = () => reject(reader.error || new Error('Could not read downloaded data'));
-    reader.readAsDataURL(blob);
+async function statModelInData(filename) {
+  try {
+    const { Filesystem } = getPlugins();
+    const stat = await Filesystem.stat({ path: filename, directory: Directory.Data });
+    return !!stat && Number(stat.size) > 0;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function waitForDownload(id, url, filename) {
+  const { CapacitorDownloader } = getPlugins();
+  if (!CapacitorDownloader) throw new Error('Native downloader plugin is unavailable');
+
+  const handles = [];
+  let pollId = null;
+  let settled = false;
+  let resolveDone;
+  let rejectDone;
+  const done = new Promise((resolve, reject) => {
+    resolveDone = resolve;
+    rejectDone = reject;
   });
+
+  const cleanup = () => {
+    if (pollId) {
+      clearInterval(pollId);
+      pollId = null;
+    }
+    handles.forEach((handle) => {
+      try { handle.remove(); } catch (error) {}
+    });
+    handles.length = 0;
+  };
+
+  const finish = (resolver, value) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    resolver(value);
+  };
+
+  const updateProgress = (progress, bytesWritten, bytesTotal) => {
+    const percent = Math.max(0, Math.min(100, Math.round(Number(progress) || 0)));
+    let detail = '';
+    if (bytesWritten) {
+      detail = ' (' + formatBytes(bytesWritten) + (bytesTotal ? ' / ' + formatBytes(bytesTotal) : '') + ')';
+    }
+    progressText.innerText = 'Downloading ' + filename + ': ' + percent + '%' + detail;
+    progressBar.style.width = percent + '%';
+  };
+
+  handles.push(await CapacitorDownloader.addListener('downloadProgress', (data) => {
+    if (!data || data.id !== id) return;
+    updateProgress(data.progress, data.bytesWritten, data.bytesTotal);
+  }));
+
+  handles.push(await CapacitorDownloader.addListener('downloadCompleted', (data) => {
+    if (data && data.id === id) finish(resolveDone);
+  }));
+
+  handles.push(await CapacitorDownloader.addListener('downloadFailed', (data) => {
+    if (data && data.id === id) finish(rejectDone, new Error((data && data.error) || 'Download failed'));
+  }));
+
+  try {
+    const task = await CapacitorDownloader.download({
+      id,
+      url,
+      destination: filename,
+      notification: 'hidden',
+    });
+    if (task && task.state === 'DONE') finish(resolveDone);
+    if (task && task.state === 'ERROR') finish(rejectDone, new Error('Download failed'));
+
+    // Safety net in case the WebView missed an event while backgrounded.
+    pollId = setInterval(async () => {
+      if (settled) return;
+      try {
+        const status = await CapacitorDownloader.checkStatus({ id });
+        if (!status) return;
+        if (status.state === 'DONE') {
+          updateProgress(100);
+          finish(resolveDone);
+        } else if (status.state === 'ERROR') {
+          finish(rejectDone, new Error('Download failed'));
+        } else {
+          updateProgress(status.progress);
+        }
+      } catch (error) {}
+    }, 1500);
+  } catch (error) {
+    finish(rejectDone, error);
+  }
+
+  try {
+    return await done;
+  } finally {
+    cleanup();
+  }
+}
+
+async function moveDownloadedFileToData(filename) {
+  const { Filesystem } = getPlugins();
+
+  try {
+    await Filesystem.stat({ path: filename, directory: Directory.External });
+  } catch (error) {
+    throw new Error('Downloaded file could not be found');
+  }
+
+  // The native downloader can only write to app-specific external storage.
+  // Copy the finished file into Directory.Data, then remove the staged copy.
+  await Filesystem.copy({
+    from: filename,
+    to: filename,
+    directory: Directory.External,
+    toDirectory: Directory.Data,
+  });
+
+  try {
+    await Filesystem.deleteFile({ path: filename, directory: Directory.External });
+  } catch (error) {
+    console.warn('Could not remove staged download:', error);
+  }
 }
 
 async function downloadAndLoadModel(url, filename) {
+  const { Filesystem, CapacitorDownloader } = getPlugins();
+
+  if (await statModelInData(filename)) {
+    setSendEnabled(false);
+    modelName = filename;
+    showOverlay('Loading ' + filename + ' (this can take a while)...');
+    progressBar.style.width = '100%';
+    try {
+      await loadModelFile(filename);
+      onModelReady();
+      await updateStorageMeter();
+    } catch (error) {
+      console.error('Model load failed:', error);
+      await clearDownloadNotification();
+      hideOverlay();
+      setSendEnabled(contextReady);
+      showErrorOverlay('Could not load model', error && error.message ? error.message : String(error));
+    }
+    return;
+  }
+
+  if (!CapacitorDownloader) {
+    showErrorOverlay('Downloader unavailable', 'The native downloader plugin is not installed.');
+    return;
+  }
+
   showOverlay('Downloading ' + filename + '...');
   progressBar.style.width = '0%';
   setSendEnabled(false);
   showDownloadingNotification(filename);
 
   try {
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error('Download failed: HTTP ' + response.status);
-    }
+    try {
+      await Filesystem.deleteFile({ path: filename, directory: Directory.External });
+    } catch (error) {}
 
-    const contentLength = Number(response.headers.get('Content-Length')) || 0;
-    const reader = response.body.getReader();
-    const chunks = [];
-    let received = 0;
+    await waitForDownload(filename, url, filename);
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      received += value.length;
-
-      const mb = (received / 1048576).toFixed(1);
-      if (contentLength > 0) {
-        const percent = Math.min(100, Math.round((received / contentLength) * 100));
-        progressText.innerText = 'Downloading ' + filename + ': ' + percent + '% (' + mb + ' MB)';
-        progressBar.style.width = percent + '%';
-      } else {
-        progressText.innerText = 'Downloading ' + filename + ': ' + mb + ' MB';
-      }
-    }
-
-    const blob = new Blob(chunks, { type: 'application/octet-stream' });
-    showOverlay('Saving ' + filename + '...');
-    const base64Data = await blobToBase64(blob);
-
-    const { Filesystem } = getPlugins();
-    const saved = await Filesystem.writeFile({
-      path: filename,
-      data: base64Data,
-      directory: Directory.Data,
-      recursive: true,
-    });
+    progressText.innerText = 'Download complete: ' + filename;
+    progressBar.style.width = '100%';
+    showOverlay('Saving ' + filename + ' to private storage...');
+    await moveDownloadedFileToData(filename);
 
     modelName = filename;
     showOverlay('Loading ' + filename + ' (this can take a while)...');
-    await loadModelFile(saved.uri || filename);
+    await loadModelFile(filename);
     onModelReady();
-    updateStorageMeter();
+    await updateStorageMeter();
     showModelReadyNotification(filename);
   } catch (error) {
     console.error('Model download failed:', error);
     await clearDownloadNotification();
     hideOverlay();
     setSendEnabled(contextReady);
-    if (!contextReady) {
-      showEmptyState();
-      setEmptyStateMessage('Download failed. Tap a model to retry, or load a .gguf file.');
-    }
+    showErrorOverlay('Download failed', error && error.message ? error.message : String(error));
   }
 }
 
@@ -466,8 +801,9 @@ async function pickAndLoadModel() {
       return;
     }
     console.error('Model load failed:', error);
-    showOverlay('Failed to load model: ' + message);
-    progressText.classList.add('text-red-400');
+    hideOverlay();
+    setSendEnabled(contextReady);
+    showErrorOverlay('Could not load model', message || 'Failed to load model');
   }
 }
 
@@ -475,18 +811,29 @@ async function initModel() {
   const { LlamaCpp } = getPlugins();
   showOverlay('Looking for models...');
 
+  let models = [];
   try {
-    const models = await LlamaCpp.getAvailableModels();
-    if (models && models.length > 0) {
-      const model = models[models.length - 1];
-      modelName = model.name;
-      showOverlay('Loading ' + model.name + '...');
+    models = await LlamaCpp.getAvailableModels();
+  } catch (error) {
+    console.warn('getAvailableModels failed:', error);
+  }
+
+  if (models && models.length > 0) {
+    const model = models[models.length - 1];
+    modelName = model.name;
+    showOverlay('Loading ' + model.name + '...');
+    try {
       await loadModelFile(model.path);
       onModelReady();
       return;
+    } catch (error) {
+      console.error('Model load failed:', error);
+      hideOverlay();
+      setModelLabels('');
+      setSendEnabled(false);
+      showErrorOverlay('Could not load model', error && error.message ? error.message : String(error));
+      return;
     }
-  } catch (e) {
-    console.warn('getAvailableModels failed, falling back to picker:', e);
   }
 
   hideOverlay();
@@ -586,8 +933,8 @@ async function generateResponse(userPrompt) {
       contextId: CONTEXT_ID,
       messages: chatHistory,
       params: {
-        n_predict: 512,
-        temperature: 0.7,
+        n_predict: appSettings.maxTokens,
+        temperature: appSettings.temperature,
         emit_partial_completion: true,
       },
     });
@@ -676,6 +1023,29 @@ settingsModal.addEventListener('click', (event) => {
   if (event.target === settingsModal) closeSettings();
 });
 clearDataBtn.addEventListener('click', clearAppData);
+deleteAllModelsBtn.addEventListener('click', deleteAllModels);
+
+temperatureSlider.addEventListener('input', () => {
+  appSettings.temperature = clampNumber(temperatureSlider.value, 0, 1, DEFAULT_SETTINGS.temperature);
+  temperatureValue.innerText = appSettings.temperature.toFixed(1);
+  saveSettings();
+});
+
+maxTokensSlider.addEventListener('input', () => {
+  appSettings.maxTokens = Math.round(clampNumber(maxTokensSlider.value, 128, 2048, DEFAULT_SETTINGS.maxTokens));
+  maxTokensValue.innerText = String(appSettings.maxTokens);
+  saveSettings();
+});
+
+modelList.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-delete-model]');
+  if (!button) return;
+  deleteModel(button.getAttribute('data-delete-model'));
+});
+
+// ERROR OVERLAY
+closeErrorBtn.addEventListener('click', closeErrorOverlay);
+errorDismissBtn.addEventListener('click', closeErrorOverlay);
 
 // NEW CHAT
 newChatBtn.addEventListener('click', () => {
@@ -690,15 +1060,18 @@ newChatBtn.addEventListener('click', () => {
 window.addEventListener('DOMContentLoaded', () => {
   try {
     setSendEnabled(false);
+    setMultimodalSupport(false);
+    loadSettings();
+    updateAppVersion();
     requestStartupPermissions();
     updateStorageMeter();
     updateStorageLocation();
     initModel().catch((error) => {
       console.error('Init error:', error);
-      alert("Init Error: " + (error && error.message ? error.message : String(error)));
+      showErrorOverlay('Init error', error && error.message ? error.message : String(error));
     });
   } catch (error) {
     console.error('Bootstrap error:', error);
-    alert("Init Error: " + (error && error.message ? error.message : String(error)));
+    showErrorOverlay('Init error', error && error.message ? error.message : String(error));
   }
 });

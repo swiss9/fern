@@ -12,7 +12,9 @@ dependencies {
     implementation project(':capacitor-device')
     implementation project(':capacitor-filesystem')
     implementation project(':capacitor-local-notifications')
+    implementation project(':capacitor-preferences')
     implementation project(':capawesome-capacitor-file-picker')
+    implementation project(':capgo-capacitor-downloader')
     implementation project(':llama-cpp-capacitor')
 
 }

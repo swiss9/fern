@@ -10,12 +10,18 @@ window.onerror = function(msg, url, line, col, error) {
 // ============================================================
 // 1. NATIVE PLUGINS (via window.Capacitor.Plugins — no bundler)
 // ============================================================
+// llama-cpp-pro exposes its JS API through a vendored no-bundler
+// build loaded by index.html (vendor/llama-cpp-pro/plugin.js):
+//   capacitorExports (<- vendor/capacitor.js),
+//   tslib (<- vendor/tslib.js),
+//   plugin.js -> window.capacitorLlamaCpp ({ initLlama, releaseAllLlama,
+//   getAvailableModels, ... }).
+const llamaCppPro = () => window.capacitorLlamaCpp;
 const getPlugins = () => {
   if (!window.Capacitor || !window.Capacitor.Plugins) {
     throw new Error('Capacitor runtime not available');
   }
   return {
-    LlamaCpp: window.Capacitor.Plugins.LlamaCpp,
     FilePicker: window.Capacitor.Plugins.FilePicker,
     Filesystem: window.Capacitor.Plugins.Filesystem,
     LocalNotifications: window.Capacitor.Plugins.LocalNotifications,
@@ -67,7 +73,6 @@ const sidebarVersionEl = document.getElementById('sidebar-version');
 // ============================================================
 // 3. STATE
 // ============================================================
-const CONTEXT_ID = 1;
 const N_THREADS = Math.max(2, (navigator.hardwareConcurrency || 4) - 1);
 const DOWNLOAD_NOTIFICATION_ID = 1001;
 const RESPONSE_NOTIFICATION_ID = 1002;
@@ -78,7 +83,7 @@ let contextReady = false;
 let isGenerating = false;
 let chatHistory = [];
 let modelName = '';
-let activeListener = null;
+let activeContext = null;
 
 function showOverlay(text) {
   progressText.classList.remove('text-red-400');
@@ -430,14 +435,11 @@ function closeSettings() {
 }
 
 async function releaseLoadedModel() {
-  const { LlamaCpp } = getPlugins();
-  if (activeListener) {
-    try { await activeListener.remove(); } catch (error) {}
-    activeListener = null;
+  const pro = llamaCppPro();
+  if (pro) {
+    try { await pro.releaseAllLlama(); } catch (error) {}
   }
-  if (LlamaCpp) {
-    try { await LlamaCpp.releaseAllContexts(); } catch (error) {}
-  }
+  activeContext = null;
   contextReady = false;
   isGenerating = false;
   setSendEnabled(false);
@@ -543,13 +545,11 @@ function escapeHtml(str) {
 // 4. MODEL LOADING
 // ============================================================
 async function loadModelFile(modelPath, notify) {
-  const { LlamaCpp, FilePicker } = getPlugins();
+  const pro = llamaCppPro();
+  if (!pro) throw new Error('llama-cpp-pro runtime is unavailable');
 
-  if (activeListener) {
-    try { await activeListener.remove(); } catch (e) {}
-    activeListener = null;
-  }
-  try { await LlamaCpp.releaseAllContexts(); } catch (e) {}
+  try { await pro.releaseAllLlama(); } catch (e) {}
+  activeContext = null;
 
   if (notify) notify('Initializing context: ' + modelName);
 
@@ -565,17 +565,15 @@ async function loadModelFile(modelPath, notify) {
   for (const candidate of candidates) {
     if (!candidate) continue;
     try {
-      const context = await LlamaCpp.initContext({
-        contextId: CONTEXT_ID,
-        params: {
-          model: candidate,
-          n_ctx: 2048,
-          n_batch: 512,
-          n_threads: N_THREADS,
-          ctx_shift: true,
-        },
+      const context = await pro.initLlama({
+        model: candidate,
+        n_ctx: 2048,
+        n_batch: 512,
+        n_threads: N_THREADS,
+        ctx_shift: true,
       });
-      return { LlamaCpp, context };
+      activeContext = context;
+      return context;
     } catch (e) {
       lastError = e;
     }
@@ -807,12 +805,12 @@ async function pickAndLoadModel() {
 }
 
 async function initModel() {
-  const { LlamaCpp } = getPlugins();
+  const pro = llamaCppPro();
   showOverlay('Looking for models...');
 
   let models = [];
   try {
-    models = await LlamaCpp.getAvailableModels();
+    models = await pro.getAvailableModels();
   } catch (error) {
     console.warn('getAvailableModels failed:', error);
   }
@@ -844,8 +842,6 @@ function onModelReady() {
   hideOverlay();
   hideEmptyState();
   setModelLabels(modelName);
-  if (activeListener) activeListener.remove();
-  activeListener = null;
   setSendEnabled(true);
   appendMessage('assistant', 'I am running locally on your device. Loaded: ' + modelName + '. No data leaves this machine.');
 }
@@ -900,8 +896,7 @@ function lastAssistantBubble() {
 // 6. GENERATION
 // ============================================================
 async function generateResponse(userPrompt) {
-  if (!contextReady || isGenerating) return;
-  const { LlamaCpp } = getPlugins();
+  if (!contextReady || isGenerating || !activeContext) return;
 
   appendMessage('user', userPrompt);
   inputEl.value = '';
@@ -915,27 +910,21 @@ async function generateResponse(userPrompt) {
   setSendEnabled(false);
 
   let streamed = false;
-  if (activeListener) activeListener.remove();
-  activeListener = LlamaCpp.addListener('@LlamaCpp_onToken', (evt) => {
-    if (!evt || evt.contextId !== CONTEXT_ID || !evt.tokenResult) return;
-    const tok = evt.tokenResult.token || evt.tokenResult.content || evt.tokenResult.accumulated_text || '';
-    if (tok) {
-      streamed = true;
-      bubbleText.classList.remove('animate-pulse');
-      bubbleText.innerText += evt.tokenResult.token || '';
-      chatContainer.scrollTop = chatContainer.scrollHeight;
-    }
-  });
-
   try {
-    const result = await LlamaCpp.chat({
-      contextId: CONTEXT_ID,
+    // llama-cpp-pro: completion() replaces chat(); tokens stream through the
+    // optional per-token callback instead of a global onToken listener.
+    const result = await activeContext.completion({
       messages: chatHistory,
-      params: {
-        n_predict: appSettings.maxTokens,
-        temperature: appSettings.temperature,
-        emit_partial_completion: true,
-      },
+      n_predict: appSettings.maxTokens,
+      temperature: appSettings.temperature,
+    }, (data) => {
+      const tok = (data && (data.token || data.content)) || '';
+      if (tok) {
+        streamed = true;
+        bubbleText.classList.remove('animate-pulse');
+        bubbleText.innerText += tok;
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+      }
     });
 
     const fullText = (result && (result.content || result.text)) || '';
@@ -958,8 +947,6 @@ async function generateResponse(userPrompt) {
   } finally {
     isGenerating = false;
     setSendEnabled(true);
-    if (activeListener) activeListener.remove();
-    activeListener = null;
   }
 }
 

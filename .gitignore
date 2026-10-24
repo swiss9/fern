@@ -6,3 +6,6 @@ android/build/
 
 # Old git metadata left behind by the unusable history rewrite
 .git_old/
+
+# and-code session state
+.and-code/

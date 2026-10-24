@@ -15,7 +15,7 @@ dependencies {
     implementation project(':capacitor-preferences')
     implementation project(':capawesome-capacitor-file-picker')
     implementation project(':capgo-capacitor-downloader')
-    implementation project(':llama-cpp-capacitor')
+    implementation project(':llama-cpp-pro')
 
 }
 

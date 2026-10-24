@@ -1,6 +1,6 @@
 {
   "name": "fern",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -20,7 +20,7 @@
     "@capacitor/preferences": "^8.0.1",
     "@capawesome/capacitor-file-picker": "^8.1.1",
     "@capgo/capacitor-downloader": "^8.3.16",
-    "llama-cpp-capacitor": "^0.1.5"
+    "llama-cpp-pro": "^0.2.4"
   },
   "devDependencies": {
     "@capacitor/assets": "^3.0.5"

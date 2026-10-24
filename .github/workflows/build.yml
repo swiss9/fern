@@ -39,16 +39,6 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Update llama.cpp to latest version
-        run: |
-          cd node_modules/llama-cpp-capacitor
-          # Download the bootstrap script directly from the plugin's GitHub repo
-          mkdir -p scripts
-          curl -fsSL https://raw.githubusercontent.com/arusatech/llama-cpp-pro/v0.2.2/scripts/bootstrap.sh -o scripts/bootstrap.sh
-          chmod +x scripts/bootstrap.sh
-          ./scripts/bootstrap.sh master
-          cd ../..
-
       - name: Sync Capacitor
         run: npx cap sync android
 

@@ -546,7 +546,17 @@ function escapeHtml(str) {
 // ============================================================
 async function loadModelFile(modelPath, notify) {
   const pro = llamaCppPro();
-  if (!pro) throw new Error('llama-cpp-pro runtime is unavailable');
+  if (!pro) {
+    const diag = {
+      capacitorLlamaCpp: typeof window.capacitorLlamaCpp,
+      nativeLlamaCpp: !!(window.Capacitor && window.Capacitor.Plugins.LlamaCpp),
+      pluginNames: window.Capacitor ? Object.keys(window.Capacitor.Plugins) : [],
+    };
+    console.error('[Fern] llama-cpp-pro runtime not found:', diag);
+    throw new Error('llama-cpp-pro runtime is unavailable. ' +
+      'Check the device console: capacitorLlamaCpp bundle = ' + diag.capacitorLlamaCpp +
+      ', native LlamaCpp plugin = ' + diag.nativeLlamaCpp + '.');
+  }
 
   try { await pro.releaseAllLlama(); } catch (e) {}
   activeContext = null;
@@ -565,6 +575,10 @@ async function loadModelFile(modelPath, notify) {
   for (const candidate of candidates) {
     if (!candidate) continue;
     try {
+      console.log('Available Plugins:', Object.keys(window.Capacitor.Plugins));
+      console.log('[Fern] llama-cpp-pro bundle:', typeof window.capacitorLlamaCpp,
+        '| native LlamaCpp plugin:', !!window.Capacitor.Plugins.LlamaCpp,
+        '| model:', candidate);
       const context = await pro.initLlama({
         model: candidate,
         n_ctx: 2048,

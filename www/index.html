@@ -82,14 +82,11 @@
 <!-- Error Overlay -->
 <div id="error-overlay" class="fixed inset-0 z-[105] flex-col items-center justify-center bg-black/80 px-4 backdrop-blur-sm" style="display: none;">
   <div class="w-full max-w-md overflow-hidden rounded-xl border border-red-500/40 bg-[#1a0d0d] shadow-[0_24px_64px_-16px_rgba(0,0,0,0.95)]">
-    <div class="flex items-start justify-between gap-4 border-b border-red-500/20 bg-red-500/[0.06] px-4 py-3">
+    <div class="border-b border-red-500/20 bg-red-500/[0.06] px-4 py-3">
       <div>
         <p class="font-mono text-[10px] uppercase tracking-[0.12em] text-red-400">Error</p>
         <h2 id="error-title" class="mt-0.5 text-[14px] font-semibold tracking-tight text-white">Something went wrong</h2>
       </div>
-      <button type="button" id="close-error-btn" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-red-500/30 bg-red-500/10 text-red-300 transition hover:bg-red-500/25 hover:text-white" aria-label="Close error">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
     </div>
     <div class="px-4 py-4">
       <p id="error-message" class="break-words font-mono text-[12px] leading-relaxed text-red-200/90"></p>
@@ -181,7 +178,7 @@
           <h3 class="text-[13px] font-semibold tracking-tight text-white">About</h3>
           <div class="mt-3 flex items-center justify-between">
             <span class="font-mono text-[10.5px] uppercase tracking-[0.1em] text-zinc-500">Version</span>
-            <span id="app-version" class="font-mono text-[12px] text-zinc-300">1.5.0</span>
+            <span id="app-version" class="font-mono text-[12px] text-zinc-300">1.5.1</span>
           </div>
           <a href="https://github.com/swiss9/fern" target="_blank" rel="noopener noreferrer"
              class="mt-3 flex h-9 w-full items-center justify-center rounded-md border border-line bg-base font-mono text-[11.5px] text-zinc-300 transition hover:border-zinc-600 hover:text-white">
@@ -275,20 +272,16 @@
           <p class="border-b border-line px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-zinc-600">Model</p>
 
           <div class="p-1">
-            <button type="button" data-url="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf" data-name="qwen2.5-0.5b-instruct-q4_k_m.gguf" class="model-download-btn flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-400 transition hover:bg-white/[0.04] hover:text-white">
-              <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-line bg-base font-mono text-[9px] text-zinc-400">Q</span>
-              <span class="truncate">Qwen 2.5 0.5B</span>
-              <span class="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">Q4 · 400MB</span>
+            <button type="button" data-url="https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf" data-name="tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf" class="model-download-btn flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-400 transition hover:bg-white/[0.04] hover:text-white">
+              <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-line bg-base font-mono text-[9px] text-zinc-400">T</span>
+              <span class="truncate">TinyLlama 1.1B</span>
+              <span class="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">Q4_K_M · 669MB</span>
             </button>
 
-            <button type="button" data-url="https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf" data-name="Llama-3.2-1B-Instruct-Q4_K_M.gguf" class="model-download-btn flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-400 transition hover:bg-white/[0.04] hover:text-white">
-              <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-line bg-base">
-                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path fill="#ffffff" fill-rule="evenodd" clip-rule="evenodd" d="M7.6 2.2c.6-.2 1.2.2 1.3.8l.5 2.9c.9-.4 1.7-.6 2.6-.6s1.7.2 2.6.6l.5-2.9c.1-.6.7-1 1.3-.8.6.2 1 .8.8 1.4l-.5 3.1c1.5 1.1 2.4 2.8 2.4 4.7 0 2.2-1.2 4.1-3 5.2l-.5 4.2c-.1 1.4-1.3 2.5-2.7 2.5h-2.2c-1.4 0-2.6-1.1-2.7-2.5l-.5-4.2c-1.8-1.1-3-3-3-5.2 0-1.9.9-3.6 2.4-4.7l-.5-3.1c-.2-.6.2-1.2.8-1.4Zm2.3 9.6a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Zm4.2 0a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Z"/>
-                </svg>
-              </span>
-              <span class="truncate">Llama 3.2 1B</span>
-              <span class="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">Q4 · 780MB</span>
+            <button type="button" data-url="https://huggingface.co/TheBloke/phi-2-GGUF/resolve/main/phi-2.Q4_K_M.gguf" data-name="phi-2.Q4_K_M.gguf" class="model-download-btn flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-400 transition hover:bg-white/[0.04] hover:text-white">
+              <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-line bg-base font-mono text-[9px] text-zinc-400">P</span>
+              <span class="truncate">Phi-2 2.7B</span>
+              <span class="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">Q4_K_M · 1.6GB</span>
             </button>
 
             <button type="button" id="local-model-btn" class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-500 transition hover:bg-white/[0.04] hover:text-white">

@@ -51,7 +51,6 @@ const clearDataBtn = document.getElementById('clear-data-btn');
 const errorOverlay = document.getElementById('error-overlay');
 const errorTitle = document.getElementById('error-title');
 const errorMessage = document.getElementById('error-message');
-const closeErrorBtn = document.getElementById('close-error-btn');
 const errorDismissBtn = document.getElementById('error-dismiss-btn');
 const attachBtn = document.getElementById('attach-btn');
 const temperatureSlider = document.getElementById('temperature-slider');
@@ -403,7 +402,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '1.5.0';
+  let version = '1.5.1';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -1044,7 +1043,6 @@ modelList.addEventListener('click', (event) => {
 });
 
 // ERROR OVERLAY
-closeErrorBtn.addEventListener('click', closeErrorOverlay);
 errorDismissBtn.addEventListener('click', closeErrorOverlay);
 
 // NEW CHAT

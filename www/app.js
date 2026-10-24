@@ -16,7 +16,80 @@ window.onerror = function(msg, url, line, col, error) {
 //   tslib (<- vendor/tslib.js),
 //   plugin.js -> window.capacitorLlamaCpp ({ initLlama, releaseAllLlama,
 //   getAvailableModels, ... }).
-const llamaCppPro = () => window.capacitorLlamaCpp;
+const LlamaCppPluginName = 'LlamaCpp'; // @CapacitorPlugin(name = "LlamaCpp") on the native side
+
+// Fallback wrapper over the standard Capacitor bridge. Native methods
+// (LlamaCppPlugin.java): initContext, releaseAllContexts, releaseContext,
+// chat, completion, getAvailableModels.
+function createNativeLlamaBridge() {
+  const native = window.Capacitor.Plugins[LlamaCppPluginName];
+  if (!native) return null;
+  let nextId = 1;
+
+  const makeContext = (id) => ({
+    id,
+    async completion(params, callback) {
+      let handle = null;
+      if (callback) {
+        handle = native.addListener(LlamaCppOnTokenEvent, (evt) => {
+          if (!evt || evt.contextId !== id) return;
+          callback(evt.tokenResult || evt);
+        });
+      }
+      try {
+        return await native.chat({
+          contextId: id,
+          messages: params.messages || [],
+          params: {
+            n_predict: params.n_predict,
+            temperature: params.temperature,
+            emit_partial_completion: !!callback,
+          },
+        });
+      } finally {
+        try { await handle.remove(); } catch (e) {}
+      }
+    },
+    async release() {
+      try { await native.releaseContext({ contextId: id }); } catch (e) {}
+    },
+  });
+
+  return {
+    async initLlama(params) {
+      const id = nextId++;
+      await native.initContext({ contextId: id, params });
+      return makeContext(id);
+    },
+    async releaseAllLlama() {
+      try { await native.releaseAllContexts(); } catch (e) {}
+    },
+    async getAvailableModels() {
+      const result = await native.getAvailableModels();
+      return (result && result.models) || [];
+    },
+  };
+}
+
+const LlamaCppOnTokenEvent = '@LlamaCpp_onToken';
+
+const llamaCppPro = () => {
+  // Prefer the official vendored bundle (initLlama, jinja chat formatting...);
+  // fall back to the raw Capacitor bridge if the bundle failed to evaluate.
+  if (typeof window.capacitorLlamaCpp !== 'undefined' && window.capacitorLlamaCpp) {
+    return window.capacitorLlamaCpp;
+  }
+  if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins[LlamaCppPluginName]) {
+    console.warn('[Fern] llama-cpp-pro bundle missing; using native Capacitor bridge fallback');
+    const bridged = createNativeLlamaBridge();
+    if (bridged) {
+      window.capacitorLlamaCpp = bridged;
+      return bridged;
+    }
+  }
+  return null;
+};
+
 const getPlugins = () => {
   if (!window.Capacitor || !window.Capacitor.Plugins) {
     throw new Error('Capacitor runtime not available');
@@ -549,7 +622,7 @@ async function loadModelFile(modelPath, notify) {
   if (!pro) {
     const diag = {
       capacitorLlamaCpp: typeof window.capacitorLlamaCpp,
-      nativeLlamaCpp: !!(window.Capacitor && window.Capacitor.Plugins.LlamaCpp),
+      nativeLlamaCpp: !!(window.Capacitor && window.Capacitor.Plugins[LlamaCppPluginName]),
       pluginNames: window.Capacitor ? Object.keys(window.Capacitor.Plugins) : [],
     };
     console.error('[Fern] llama-cpp-pro runtime not found:', diag);
@@ -576,9 +649,12 @@ async function loadModelFile(modelPath, notify) {
     if (!candidate) continue;
     try {
       console.log('Available Plugins:', Object.keys(window.Capacitor.Plugins));
-      console.log('[Fern] llama-cpp-pro bundle:', typeof window.capacitorLlamaCpp,
-        '| native LlamaCpp plugin:', !!window.Capacitor.Plugins.LlamaCpp,
-        '| model:', candidate);
+      console.log('[Fern] pre-init:', {
+        'window.capacitorLlamaCpp': window.capacitorLlamaCpp,
+        nativeLlamaCpp: !!window.Capacitor.Plugins[LlamaCppPluginName],
+        resolvedRuntime: pro === window.capacitorLlamaCpp ? 'bundle' : 'native-bridge-fallback',
+        model: candidate,
+      });
       const context = await pro.initLlama({
         model: candidate,
         n_ctx: 2048,

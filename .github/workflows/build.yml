@@ -39,12 +39,6 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Bootstrap latest llama.cpp
-        run: |
-          cd node_modules/llama-cpp-capacitor
-          chmod +x scripts/bootstrap.sh
-          ./scripts/bootstrap.sh master
-
       - name: Sync Capacitor
         run: npx cap sync android
 

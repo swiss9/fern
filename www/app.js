@@ -37,14 +37,21 @@ function createNativeLlamaBridge() {
         });
       }
       try {
+        const nativeParams = {
+          n_predict: params.n_predict,
+          temperature: params.temperature,
+          emit_partial_completion: !!callback,
+        };
+        if (params.prompt) {
+          return await native.completion({
+            contextId: id,
+            params: Object.assign({}, nativeParams, { prompt: params.prompt }),
+          });
+        }
         return await native.chat({
           contextId: id,
           messages: params.messages || [],
-          params: {
-            n_predict: params.n_predict,
-            temperature: params.temperature,
-            emit_partial_completion: !!callback,
-          },
+          params: nativeParams,
         });
       } finally {
         try { await handle.remove(); } catch (e) {}
@@ -197,8 +204,8 @@ function resetToNoModelState() {
   setEmptyStateMessage('No local model loaded.');
 }
 
-function isMultimodalModel(name) {
-  return /(llava|vision|multimodal|moondream|bakllava|qwen[-\s]?vl|minicpm[-\s]?v|pixtral|idefics|internvl|gemma[-\s]?3)/i.test(name || '');
+function isMultimodal(modelName) {
+  return /(llava|vision|moondream)/i.test(modelName || '');
 }
 
 function setMultimodalSupport(enabled) {
@@ -239,7 +246,7 @@ function setModelLabels(name) {
   const label = name || 'No model';
   document.getElementById('sidebar-model-label').innerText = label;
   document.getElementById('active-model-chip').innerText = name ? name.toUpperCase() : 'NO MODEL';
-  setMultimodalSupport(!!name && isMultimodalModel(name));
+  setMultimodalSupport(!!name && isMultimodal(name));
 }
 
 function formatBytes(bytes) {
@@ -479,7 +486,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '2.2.4';
+  let version = '2.3.0';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -906,6 +913,39 @@ function lastAssistantBubble() {
 // ============================================================
 // 6. GENERATION
 // ============================================================
+function buildQwenPrompt(history) {
+  return '<|im_start|>system\nYou are Fern, a helpful local AI.<|im_end|>\n' +
+    history.map((msg) => '<|im_start|>' + msg.role + '\n' + (msg.content || '') + '<|im_end|>\n').join('') +
+    '<|im_start|>assistant\n';
+}
+
+function showTypingIndicator() {
+  const div = document.createElement('div');
+  div.id = 'typing-indicator';
+  div.className = 'group mb-9 flex gap-3';
+  div.setAttribute('aria-label', 'Fern is typing');
+  div.innerHTML =
+    '<div class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-line bg-panel">' +
+      '<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+        '<path fill="#ffffff" fill-rule="evenodd" clip-rule="evenodd" d="M7.6 2.2c.6-.2 1.2.2 1.3.8l.5 2.9c.9-.4 1.7-.6 2.6-.6s1.7.2 2.6.6l.5-2.9c.1-.6.7-1 1.3-.8.6.2 1 .8.8 1.4l-.5 3.1c1.5 1.1 2.4 2.8 2.4 4.7 0 2.2-1.2 4.1-3 5.2l-.5 4.2c-.1 1.4-1.3 2.5-2.7 2.5h-2.2c-1.4 0-2.6-1.1-2.7-2.5l-.5-4.2c-1.8-1.1-3-3-3-5.2 0-1.9.9-3.6 2.4-4.7l-.5-3.1c-.2-.6.2-1.2.8-1.4Zm2.3 9.6a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Zm4.2 0a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Z"/>' +
+      '</svg>' +
+    '</div>' +
+    '<div class="min-w-0 flex-1">' +
+      '<div class="mb-1.5 flex items-center gap-2">' +
+        '<span class="text-[12px] font-semibold tracking-tight text-white">' + escapeHtml(modelName || 'Local model') + '</span>' +
+      '</div>' +
+      '<div class="flex h-6 items-center gap-1.5">' +
+        '<span class="typing-dot"></span>' +
+        '<span class="typing-dot"></span>' +
+        '<span class="typing-dot"></span>' +
+      '</div>' +
+    '</div>';
+
+  messagesEl.appendChild(div);
+  chatContainer.scrollTop = chatContainer.scrollHeight;
+  return div;
+}
+
 async function generateResponse(userPrompt) {
   if (!contextReady || isGenerating || !activeContext) return;
 
@@ -913,48 +953,55 @@ async function generateResponse(userPrompt) {
   inputEl.value = '';
   inputEl.style.height = 'auto';
 
-  const bubble = appendMessage('assistant', '');
-  const bubbleText = bubble.querySelector('p');
-  bubbleText.classList.add('animate-pulse');
+  const typing = showTypingIndicator();
+  let bubble = null;
+  let bubbleText = null;
+
+  const revealBubble = (content) => {
+    if (typing.parentNode) typing.remove();
+    if (!bubble) {
+      bubble = appendMessage('assistant', content || '');
+      bubbleText = bubble.querySelector('p');
+    }
+    return bubbleText;
+  };
 
   isGenerating = true;
   setSendEnabled(false);
 
   let streamed = false;
   try {
-    // llama-cpp-pro: completion() replaces chat(); tokens stream through the
-    // optional per-token callback instead of a global onToken listener.
+    await loadSettings();
+
+    const prompt = buildQwenPrompt(chatHistory);
     const result = await activeContext.completion({
-      messages: chatHistory,
+      prompt,
       n_predict: appSettings.maxTokens,
       temperature: appSettings.temperature,
     }, (data) => {
       const tok = (data && (data.token || data.content)) || '';
       if (tok) {
         streamed = true;
-        bubbleText.classList.remove('animate-pulse');
+        revealBubble();
         bubbleText.innerText += tok;
         chatContainer.scrollTop = chatContainer.scrollHeight;
       }
     });
 
     const fullText = (result && (result.content || result.text)) || '';
-    chatHistory[chatHistory.length - 1] = { role: 'assistant', content: fullText };
-
-    bubbleText.classList.remove('animate-pulse');
+    revealBubble(fullText || '[Empty response]');
     if (!streamed) {
-      if (fullText) {
-        bubbleText.innerText = fullText;
-      } else {
-        bubbleText.innerText = '[Empty response]';
-      }
+      bubbleText.innerText = fullText || '[Empty response]';
     }
+    chatHistory[chatHistory.length - 1] = { role: 'assistant', content: fullText || bubbleText.innerText };
     notifyBackgroundResponse(fullText || bubbleText.innerText);
     chatContainer.scrollTop = chatContainer.scrollHeight;
   } catch (error) {
     console.error('Generation error:', error);
-    bubbleText.classList.remove('animate-pulse');
-    bubbleText.innerText = '[Error: ' + (error.message || String(error)) + ']';
+    const message = '[Error: ' + (error.message || String(error)) + ']';
+    revealBubble(message);
+    bubbleText.innerText = message;
+    chatHistory[chatHistory.length - 1] = { role: 'assistant', content: message };
   } finally {
     isGenerating = false;
     setSendEnabled(true);

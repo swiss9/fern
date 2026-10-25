@@ -1,5 +1,16 @@
 {
   "appId": "com.fern.localai",
   "appName": "Fern",
-  "webDir": "www"
+  "webDir": "www",
+  "plugins": {
+    "SplashScreen": {
+      "enabled": true,
+      "launchShowDuration": 1500,
+      "launchAutoHide": true,
+      "backgroundColor": "#09090b",
+      "androidSplashResourceName": "splash",
+      "androidScaleType": "CENTER_INSIDE",
+      "showSpinner": false
+    }
+  }
 }

@@ -17,8 +17,5 @@ project(':capacitor-preferences').projectDir = new File('../node_modules/@capaci
 include ':capawesome-capacitor-file-picker'
 project(':capawesome-capacitor-file-picker').projectDir = new File('../node_modules/@capawesome/capacitor-file-picker/android')
 
-include ':capgo-capacitor-downloader'
-project(':capgo-capacitor-downloader').projectDir = new File('../node_modules/@capgo/capacitor-downloader/android')
-
 include ':llama-cpp-pro'
 project(':llama-cpp-pro').projectDir = new File('../node_modules/llama-cpp-pro/android')

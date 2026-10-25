@@ -99,7 +99,6 @@ const getPlugins = () => {
     Filesystem: window.Capacitor.Plugins.Filesystem,
     LocalNotifications: window.Capacitor.Plugins.LocalNotifications,
     Device: window.Capacitor.Plugins.Device,
-    CapacitorDownloader: window.Capacitor.Plugins.CapacitorDownloader,
     Preferences: window.Capacitor.Plugins.Preferences,
   };
 };
@@ -480,7 +479,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '2.2.0';
+  let version = '2.2.1';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -681,148 +680,19 @@ async function statModelInData(filename) {
   }
 }
 
-async function waitForDownload(id, url, filename) {
-  const { CapacitorDownloader } = getPlugins();
-  if (!CapacitorDownloader) throw new Error('Native downloader plugin is unavailable');
-
-  const handles = [];
-  let pollId = null;
-  let settled = false;
-  let resolveDone;
-  let rejectDone;
-  const done = new Promise((resolve, reject) => {
-    resolveDone = resolve;
-    rejectDone = reject;
-  });
-
-  const cleanup = () => {
-    if (pollId) {
-      clearInterval(pollId);
-      pollId = null;
-    }
-    handles.forEach((handle) => {
-      try { handle.remove(); } catch (error) {}
-    });
-    handles.length = 0;
-  };
-
-  const finish = (resolver, value) => {
-    if (settled) return;
-    settled = true;
-    cleanup();
-    resolver(value);
-  };
-
-  const updateProgress = (progress, bytesWritten, bytesTotal) => {
-    const written = Number(bytesWritten) || 0;
-    const total = Number(bytesTotal) || 0;
-    let value = Number(progress);
-    if (!Number.isFinite(value)) value = 0;
-    if (total > 0 && written > 0) {
-      value = (written / total) * 100;
-    } else if (value > 0 && value <= 1) {
-      // The Android DownloadManager plugin reports progress as a 0..1 fraction.
-      value = value * 100;
-    }
-    const percent = Math.max(0, Math.min(100, Math.round(value)));
-    let detail = '';
-    if (written) {
-      detail = ' (' + formatBytes(written) + (total ? ' / ' + formatBytes(total) : '') + ')';
-    }
-    progressText.innerText = 'Downloading ' + filename + ': ' + percent + '%' + detail;
-    progressBar.style.width = percent + '%';
-  };
-
-  handles.push(await CapacitorDownloader.addListener('downloadProgress', (data) => {
-    if (!data || data.id !== id) return;
-    updateProgress(data.progress, data.bytesWritten, data.bytesTotal);
-  }));
-
-  handles.push(await CapacitorDownloader.addListener('downloadCompleted', (data) => {
-    if (data && data.id === id) finish(resolveDone);
-  }));
-
-  handles.push(await CapacitorDownloader.addListener('downloadFailed', (data) => {
-    if (data && data.id === id) finish(rejectDone, new Error((data && data.error) || 'Download failed'));
-  }));
-
-  try {
-    const task = await CapacitorDownloader.download({
-      id,
-      url,
-      destination: filename,
-      notification: 'hidden',
-    });
-    if (task && (task.state === 'DONE' || task.status === 2)) finish(resolveDone);
-    if (task && (task.state === 'ERROR' || task.status === 3)) finish(rejectDone, new Error('Download failed'));
-
-    // Safety net in case the WebView missed an event while backgrounded.
-    pollId = setInterval(async () => {
-      if (settled) return;
-      try {
-        const status = await CapacitorDownloader.checkStatus({ id });
-        if (!status) return;
-        const state = status.state || status.status;
-        if (state === 'DONE' || state === 2) {
-          updateProgress(100);
-          finish(resolveDone);
-        } else if (state === 'ERROR' || state === 3) {
-          finish(rejectDone, new Error(status.reasonText || 'Download failed'));
-        } else {
-          const written = status.bytesWritten != null ? status.bytesWritten : status.bytesDownloaded;
-          updateProgress(status.progress, written, status.bytesTotal);
-        }
-      } catch (error) {}
-    }, 1500);
-  } catch (error) {
-    finish(rejectDone, error);
-  }
-
-  try {
-    return await done;
-  } finally {
-    cleanup();
-  }
-}
-
-async function moveDownloadedFileToData(filename) {
+async function downloadAndLoadModel(url, filename) {
   const { Filesystem } = getPlugins();
 
-  try {
-    await Filesystem.stat({ path: filename, directory: Directory.External });
-  } catch (error) {
-    throw new Error('Downloaded file could not be found');
+  if (!Filesystem) {
+    showErrorOverlay('Filesystem unavailable', 'The Filesystem plugin is not installed.');
+    return;
   }
-
-  // The native downloader can only write to app-specific external storage.
-  // Copy the finished file into Directory.Data, then remove the staged copy.
-  await Filesystem.copy({
-    from: filename,
-    to: filename,
-    directory: Directory.External,
-    toDirectory: Directory.Data,
-  });
-
-  try {
-    await Filesystem.deleteFile({ path: filename, directory: Directory.External });
-  } catch (error) {
-    console.warn('Could not remove staged download:', error);
-  }
-
-  // Resolve the exact file:// URI instead of guessing how the native loader
-  // will map the filename to app storage.
-  const { uri } = await Filesystem.getUri({ path: filename, directory: Directory.Data });
-  if (!uri) throw new Error('Could not resolve the saved model path');
-  return uri;
-}
-
-async function downloadAndLoadModel(url, filename) {
-  const { Filesystem, CapacitorDownloader } = getPlugins();
 
   if (await statModelInData(filename)) {
     setSendEnabled(false);
     modelName = filename;
     showOverlay('Loading ' + filename + ' (this can take a while)...');
+    progressBar.style.display = '';
     progressBar.style.width = '100%';
     try {
       const { uri } = await Filesystem.getUri({ path: filename, directory: Directory.Data });
@@ -840,36 +710,36 @@ async function downloadAndLoadModel(url, filename) {
     return;
   }
 
-  if (!CapacitorDownloader) {
-    showErrorOverlay('Downloader unavailable', 'The native downloader plugin is not installed.');
-    return;
-  }
-
-  showOverlay('Downloading ' + filename + '...');
-  progressBar.style.width = '0%';
+  showOverlay('Downloading ' + filename + '... Please wait.');
+  progressBar.style.display = 'none';
   setSendEnabled(false);
   showDownloadingNotification(filename);
 
   try {
     try {
-      await Filesystem.deleteFile({ path: filename, directory: Directory.External });
+      await Filesystem.deleteFile({ path: filename, directory: Directory.Data });
     } catch (error) {}
 
-    await waitForDownload(filename, url, filename);
-
-    progressText.innerText = 'Download complete: ' + filename;
-    progressBar.style.width = '100%';
-    showOverlay('Saving ' + filename + ' to private storage...');
-    const modelUri = await moveDownloadedFileToData(filename);
+    const result = await Filesystem.downloadFile({
+      url,
+      path: filename,
+      directory: Directory.Data,
+    });
+    if (!result || !result.path) {
+      throw new Error('Download did not return a saved file path');
+    }
 
     modelName = filename;
     showOverlay('Loading ' + filename + ' (this can take a while)...');
-    await loadModelFile(modelUri, null, { exact: true });
+    await loadModelFile(result.path, null, { exact: true });
     onModelReady();
     await updateStorageMeter();
     showModelReadyNotification(filename);
   } catch (error) {
     console.error('Model download failed:', error);
+    try {
+      await Filesystem.deleteFile({ path: filename, directory: Directory.Data });
+    } catch (cleanupError) {}
     await clearDownloadNotification();
     hideOverlay();
     setSendEnabled(contextReady);

@@ -117,6 +117,7 @@ const Directory = { Data: 'DATA', External: 'EXTERNAL' };
 // ============================================================
 // 2. UI ELEMENTS
 // ============================================================
+const splashOverlay = document.getElementById('splash-overlay');
 const chatContainer = document.getElementById('chat-container');
 const messagesEl = document.getElementById('messages');
 const inputEl = document.getElementById('chat-input');
@@ -161,6 +162,8 @@ const N_THREADS = Math.max(2, (navigator.hardwareConcurrency || 4) - 1);
 const DOWNLOAD_NOTIFICATION_ID = 1001;
 const RESPONSE_NOTIFICATION_ID = 1002;
 const SETTINGS_KEY = 'fern.settings';
+const CHAT_HISTORY_KEY = 'chatHistory';
+const ACTIVE_MODEL_KEY = 'activeModelName';
 const DEFAULT_SETTINGS = { temperature: 0.7, maxTokens: 512 };
 let appSettings = { ...DEFAULT_SETTINGS };
 let contextReady = false;
@@ -168,6 +171,16 @@ let isGenerating = false;
 let chatHistory = [];
 let modelName = '';
 let activeContext = null;
+let chatSaveChain = Promise.resolve();
+
+function hideSplash() {
+  if (!splashOverlay) return;
+  splashOverlay.classList.add('opacity-0', 'pointer-events-none');
+  splashOverlay.style.opacity = '0';
+  setTimeout(() => {
+    splashOverlay.style.display = 'none';
+  }, 500);
+}
 
 function showOverlay(text) {
   progressText.classList.remove('text-red-400');
@@ -276,6 +289,10 @@ function setEmptyStateMessage(text) {
 }
 
 function showEmptyState() {
+  if (chatHistory.length > 0) {
+    emptyState.classList.add('hidden');
+    return;
+  }
   emptyState.classList.remove('hidden');
   if (contextReady && modelName) {
     setEmptyStateMessage('Ready. Ask ' + modelName + ' anything.');
@@ -302,6 +319,74 @@ function formatBytes(bytes) {
   const mb = bytes / 1048576;
   if (mb >= 1024) return (mb / 1024).toFixed(2) + ' GB';
   return mb.toFixed(mb >= 100 ? 0 : 1) + ' MB';
+}
+
+function getPreferencesPlugin() {
+  try {
+    return getPlugins().Preferences;
+  } catch (error) {
+    return null;
+  }
+}
+
+function saveChatHistory() {
+  const serialized = JSON.stringify(chatHistory);
+  chatSaveChain = chatSaveChain.then(async () => {
+    try {
+      const Preferences = getPreferencesPlugin();
+      if (!Preferences) return;
+      await Preferences.set({ key: CHAT_HISTORY_KEY, value: serialized });
+    } catch (error) {
+      console.warn('Could not save chat history:', error);
+    }
+  });
+  return chatSaveChain;
+}
+
+async function loadChatHistory() {
+  try {
+    const Preferences = getPreferencesPlugin();
+    if (!Preferences) return;
+    const { value } = await Preferences.get({ key: CHAT_HISTORY_KEY });
+    if (!value) return;
+
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return;
+
+    const restored = parsed.filter((message) =>
+      message && typeof message.role === 'string' && typeof message.content === 'string'
+    );
+    if (!restored.length) return;
+
+    chatHistory = restored;
+    messagesEl.innerHTML = '';
+    chatHistory.forEach((message) => {
+      appendMessage(message.role, message.content, { persist: false });
+    });
+    hideEmptyState();
+  } catch (error) {
+    console.warn('Could not load chat history:', error);
+  }
+}
+
+async function saveActiveModelName(name) {
+  try {
+    const Preferences = getPreferencesPlugin();
+    if (!Preferences || !name) return;
+    await Preferences.set({ key: ACTIVE_MODEL_KEY, value: name });
+  } catch (error) {
+    console.warn('Could not save active model name:', error);
+  }
+}
+
+async function clearActiveModelName() {
+  try {
+    const Preferences = getPreferencesPlugin();
+    if (!Preferences) return;
+    await Preferences.remove({ key: ACTIVE_MODEL_KEY });
+  } catch (error) {
+    console.warn('Could not clear active model name:', error);
+  }
 }
 
 // ============================================================
@@ -534,7 +619,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '2.4.0';
+  let version = '2.6.0';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -591,6 +676,7 @@ async function deleteModel(filename) {
   if (deletingActive) {
     modelName = '';
     setModelLabels('');
+    await clearActiveModelName();
     showEmptyState();
     setEmptyStateMessage('No local model loaded.');
   }
@@ -620,6 +706,7 @@ async function deleteAllModels() {
 
   modelName = '';
   setModelLabels('');
+  await clearActiveModelName();
   showEmptyState();
   setEmptyStateMessage('No local model loaded.');
   await refreshModelManager();
@@ -648,6 +735,8 @@ async function clearAppData() {
     chatHistory = [];
     messagesEl.innerHTML = '';
     setModelLabels('');
+    await saveChatHistory();
+    await clearActiveModelName();
     await clearDownloadNotification();
     await refreshModelManager();
     await updateStorageLocation();
@@ -856,6 +945,7 @@ async function downloadAndLoadModel(url, filename) {
       const { uri } = await Filesystem.getUri({ path: filename, directory: Directory.Data });
       if (!uri) throw new Error('Could not resolve the saved model path');
       await loadModelFile(uri, null, { exact: true });
+      await saveActiveModelName(filename);
       onModelReady();
       await updateStorageMeter();
     } catch (error) {
@@ -890,6 +980,7 @@ async function downloadAndLoadModel(url, filename) {
     modelName = filename;
     showOverlay('Loading ' + filename + ' (this can take a while)...');
     await loadModelFile(result.path, null, { exact: true });
+    await saveActiveModelName(filename);
     onModelReady();
     await updateStorageMeter();
     showModelReadyNotification(filename);
@@ -968,6 +1059,7 @@ async function pickAndLoadModel() {
 
     showOverlay('Loading ' + file.name + ' (this can take a while)...');
     await loadModelFile(rawPath, null, { exact: true });
+    await saveActiveModelName(file.name);
     onModelReady();
   } catch (error) {
     const message = String((error && error.message) || error || '');
@@ -982,53 +1074,96 @@ async function pickAndLoadModel() {
   }
 }
 
-async function initModel() {
-  const pro = llamaCppPro();
-  showOverlay('Looking for models...');
-
-  let models = [];
+async function loadPersistedModel() {
+  let savedName = '';
   try {
-    models = await pro.getAvailableModels();
+    const Preferences = getPreferencesPlugin();
+    if (Preferences) {
+      const { value } = await Preferences.get({ key: ACTIVE_MODEL_KEY });
+      savedName = value || '';
+    }
   } catch (error) {
-    console.warn('getAvailableModels failed:', error);
+    console.warn('Could not read the saved model name:', error);
   }
 
-  if (models && models.length > 0) {
-    const model = models[models.length - 1];
-    modelName = model.name;
-    showOverlay('Loading ' + model.name + '...');
-    try {
-      await loadModelFile(model.path);
-      onModelReady();
-      return;
-    } catch (error) {
-      console.error('Model load failed:', error);
-      hideOverlay();
-      setModelLabels('');
-      setSendEnabled(false);
-      if (!error || !error.fernCancelled) reportModelLoadError(error);
-      return;
+  let targetName = '';
+
+  if (savedName) {
+    if (await statModelInData(savedName)) {
+      targetName = savedName;
+    } else {
+      console.warn('[Fern] Saved model no longer exists:', savedName);
+      await clearActiveModelName();
     }
   }
 
-  hideOverlay();
-  showEmptyState();
+  if (!targetName) {
+    try {
+      const models = await getInstalledModels();
+      if (models.length > 0) {
+        targetName = models[models.length - 1].name;
+      }
+    } catch (error) {
+      console.warn('Could not scan for installed models:', error);
+    }
+  }
+
+  if (!targetName) {
+    hideOverlay();
+    setEmptyStateMessage('No local model loaded.');
+    showEmptyState();
+    return false;
+  }
+
+  modelName = targetName;
+  setModelLabels(targetName);
+  showOverlay('Loading ' + targetName + '...');
+
+  try {
+    const { Filesystem } = getPlugins();
+    if (!Filesystem) throw new Error('The Filesystem plugin is not installed.');
+
+    const { uri } = await Filesystem.getUri({ path: targetName, directory: Directory.Data });
+    if (!uri) throw new Error('Could not resolve the saved model path');
+
+    const rawPath = uri.replace(/^file:\/\//, '');
+    await loadModelFile(rawPath, null, { exact: true });
+    await saveActiveModelName(targetName);
+    onModelReady({ announce: false });
+    return true;
+  } catch (error) {
+    console.error('Model load failed:', error);
+    hideOverlay();
+    modelName = '';
+    setModelLabels('');
+    setSendEnabled(false);
+    showEmptyState();
+    if (!error || !error.fernCancelled) reportModelLoadError(error);
+    return false;
+  }
 }
 
-function onModelReady() {
+function onModelReady(options) {
+  const announce = !options || options.announce !== false;
   contextReady = true;
   hideOverlay();
   hideEmptyState();
   setModelLabels(modelName);
   setSendEnabled(true);
-  appendMessage('assistant', 'I am running locally on your device. Loaded: ' + modelName + '. No data leaves this machine.');
+  if (announce) {
+    appendMessage('assistant', 'I am running locally on your device. Loaded: ' + modelName + '. No data leaves this machine.');
+  }
 }
 
 // ============================================================
 // 5. CHAT UI RENDERING
 // ============================================================
-function appendMessage(role, content) {
-  chatHistory.push({ role, content });
+function appendMessage(role, content, options) {
+  const persist = !options || options.persist !== false;
+  if (persist) {
+    chatHistory.push({ role, content });
+    saveChatHistory();
+  }
 
   const div = document.createElement('div');
   div.className = role === 'user'
@@ -1217,7 +1352,7 @@ async function generateResponse(userPrompt) {
   const revealBubble = (content) => {
     if (typing.parentNode) typing.remove();
     if (!bubble) {
-      bubble = appendMessage('assistant', content || '');
+      bubble = appendMessage('assistant', content || '', { persist: false });
       bubbleText = bubble.querySelector('p');
     }
     return bubbleText;
@@ -1247,12 +1382,12 @@ async function generateResponse(userPrompt) {
     });
 
     const fullText = (result && (result.content || result.text)) || '';
-    revealBubble(fullText || '[Empty response]');
-    if (!streamed) {
-      bubbleText.innerText = fullText || '[Empty response]';
-    }
-    chatHistory[chatHistory.length - 1] = { role: 'assistant', content: fullText || bubbleText.innerText };
-    notifyBackgroundResponse(fullText || bubbleText.innerText);
+    const finalText = fullText || (streamed ? bubbleText.innerText : '') || '[Empty response]';
+    revealBubble(finalText);
+    bubbleText.innerText = finalText;
+    chatHistory.push({ role: 'assistant', content: finalText });
+    await saveChatHistory();
+    notifyBackgroundResponse(finalText);
     chatContainer.scrollTop = chatContainer.scrollHeight;
   } catch (error) {
     console.error('Generation error:', error);
@@ -1264,7 +1399,8 @@ async function generateResponse(userPrompt) {
       const message = '[Error: ' + (error.message || String(error)) + ']';
       revealBubble(message);
       bubbleText.innerText = message;
-      chatHistory[chatHistory.length - 1] = { role: 'assistant', content: message };
+      chatHistory.push({ role: 'assistant', content: message });
+      await saveChatHistory();
     }
   } finally {
     await allowScreenSleep();
@@ -1363,27 +1499,43 @@ ramWarningCancelBtn.addEventListener('click', () => resolveRamWarning(false));
 newChatBtn.addEventListener('click', () => {
   chatHistory = [];
   messagesEl.innerHTML = '';
+  saveChatHistory();
   showEmptyState();
 });
 
 // ============================================================
 // 8. BOOTSTRAP
 // ============================================================
-window.addEventListener('DOMContentLoaded', () => {
+async function initApp() {
   try {
     setSendEnabled(false);
     setMultimodalSupport(false);
-    loadSettings();
+
     updateAppVersion();
     requestStartupPermissions();
-    updateStorageMeter();
     updateStorageLocation();
-    initModel().catch((error) => {
-      console.error('Init error:', error);
-      showErrorOverlay('Init error', error && error.message ? error.message : String(error));
-    });
+
+    // 1. Restore generation settings.
+    await loadSettings();
+
+    // 2. Restore the conversation and re-render every message.
+    await loadChatHistory();
+
+    // 3. Restore the last model (or scan Directory.Data) and load it.
+    await loadPersistedModel();
+
+    await updateStorageMeter();
   } catch (error) {
     console.error('Bootstrap error:', error);
     showErrorOverlay('Init error', error && error.message ? error.message : String(error));
+  } finally {
+    // 4. Only reveal the app once state restoration is complete.
+    hideSplash();
   }
-});
+}
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', initApp);
+} else {
+  initApp();
+}

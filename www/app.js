@@ -479,7 +479,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '2.2.2';
+  let version = '2.2.3';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -776,16 +776,17 @@ async function pickAndLoadModel() {
 
     // The FilePicker returns a content:// SAF URI that the native llama.cpp
     // engine cannot open with fopen(). Copy it into the app's private vault
+    // with a native stream (no Base64 round-trip, so large models don't OOM)
     // and hand the resolved file:///data/user/0/... path to the engine.
+    // `toDirectory` (not `directory`) is required: `directory` applies to the
+    // source too, which would make the plugin treat the content:// URI as a
+    // relative path inside Directory.Data.
     modelName = file.name;
     showOverlay('Importing ' + file.name + ' into private storage...');
-    const { data } = await Filesystem.readFile({ path: file.path });
-    if (!data) throw new Error('Could not read the selected model file');
-
-    await Filesystem.writeFile({
-      path: file.name,
-      data,
-      directory: Directory.Data,
+    await Filesystem.copy({
+      from: file.path,
+      to: file.name,
+      toDirectory: Directory.Data,
     });
 
     const { uri } = await Filesystem.getUri({ path: file.name, directory: Directory.Data });

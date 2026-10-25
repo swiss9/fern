@@ -479,7 +479,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '2.2.3';
+  let version = '2.2.4';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -789,11 +789,18 @@ async function pickAndLoadModel() {
       toDirectory: Directory.Data,
     });
 
-    const { uri } = await Filesystem.getUri({ path: file.name, directory: Directory.Data });
-    if (!uri) throw new Error('Could not resolve the imported model path');
+    const uriResult = await Filesystem.getUri({ path: file.name, directory: Directory.Data });
+    if (!uriResult || !uriResult.uri) throw new Error('Could not resolve the imported model path');
+
+    // getUri returns a file:// URI, but the native llama.cpp engine opens the
+    // model with fopen() and needs a raw absolute path.
+    const rawPath = uriResult.uri.replace('file://', '');
+
+    const stat = await Filesystem.stat({ path: file.name, directory: Directory.Data });
+    console.log("File exists, size: " + stat.size);
 
     showOverlay('Loading ' + file.name + ' (this can take a while)...');
-    await loadModelFile(uri, null, { exact: true });
+    await loadModelFile(rawPath, null, { exact: true });
     onModelReady();
   } catch (error) {
     const message = String((error && error.message) || error || '');

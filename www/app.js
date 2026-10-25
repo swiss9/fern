@@ -479,7 +479,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '2.2.1';
+  let version = '2.2.2';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -752,7 +752,10 @@ async function pickAndLoadModel() {
   showOverlay('Selecting model file...');
 
   try {
-    const { FilePicker } = getPlugins();
+    const { FilePicker, Filesystem } = getPlugins();
+    if (!Filesystem) {
+      throw new Error('The Filesystem plugin is not installed.');
+    }
     const result = await FilePicker.pickFiles({
       types: ['application/octet-stream'],
       limit: 1,
@@ -767,9 +770,29 @@ async function pickAndLoadModel() {
       appendMessage('assistant', 'That file is not a .gguf model. Please select a .gguf file.');
       return;
     }
+    if (!file.path) {
+      throw new Error('The selected file did not provide a readable path');
+    }
+
+    // The FilePicker returns a content:// SAF URI that the native llama.cpp
+    // engine cannot open with fopen(). Copy it into the app's private vault
+    // and hand the resolved file:///data/user/0/... path to the engine.
     modelName = file.name;
+    showOverlay('Importing ' + file.name + ' into private storage...');
+    const { data } = await Filesystem.readFile({ path: file.path });
+    if (!data) throw new Error('Could not read the selected model file');
+
+    await Filesystem.writeFile({
+      path: file.name,
+      data,
+      directory: Directory.Data,
+    });
+
+    const { uri } = await Filesystem.getUri({ path: file.name, directory: Directory.Data });
+    if (!uri) throw new Error('Could not resolve the imported model path');
+
     showOverlay('Loading ' + file.name + ' (this can take a while)...');
-    await loadModelFile(file.path || file.name);
+    await loadModelFile(uri, null, { exact: true });
     onModelReady();
   } catch (error) {
     const message = String((error && error.message) || error || '');

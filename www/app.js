@@ -107,6 +107,7 @@ const getPlugins = () => {
     LocalNotifications: window.Capacitor.Plugins.LocalNotifications,
     Device: window.Capacitor.Plugins.Device,
     Preferences: window.Capacitor.Plugins.Preferences,
+    KeepAwake: window.Capacitor.Plugins.KeepAwake,
   };
 };
 
@@ -137,6 +138,10 @@ const errorOverlay = document.getElementById('error-overlay');
 const errorTitle = document.getElementById('error-title');
 const errorMessage = document.getElementById('error-message');
 const errorDismissBtn = document.getElementById('error-dismiss-btn');
+const ramWarningOverlay = document.getElementById('ram-warning-overlay');
+const ramWarningMessage = document.getElementById('ram-warning-message');
+const ramWarningProceedBtn = document.getElementById('ram-warning-proceed');
+const ramWarningCancelBtn = document.getElementById('ram-warning-cancel');
 const attachBtn = document.getElementById('attach-btn');
 const temperatureSlider = document.getElementById('temperature-slider');
 const temperatureValue = document.getElementById('temperature-value');
@@ -192,6 +197,49 @@ function closeErrorOverlay() {
   errorOverlay.style.display = 'none';
   hideOverlay();
   resetToNoModelState();
+}
+
+let ramWarningResolve = null;
+
+function showRamWarning(message) {
+  if (!ramWarningOverlay) return Promise.resolve(false);
+  ramWarningMessage.innerText = String(message || '');
+  ramWarningOverlay.classList.remove('hidden');
+  ramWarningOverlay.style.display = 'flex';
+  return new Promise((resolve) => {
+    ramWarningResolve = resolve;
+  });
+}
+
+function resolveRamWarning(proceed) {
+  if (!ramWarningOverlay) return;
+  ramWarningOverlay.classList.add('hidden');
+  ramWarningOverlay.style.display = 'none';
+  const resolve = ramWarningResolve;
+  ramWarningResolve = null;
+  if (resolve) resolve(!!proceed);
+}
+
+async function keepScreenAwake() {
+  try {
+    const { KeepAwake } = getPlugins();
+    if (KeepAwake && typeof KeepAwake.keepAwake === 'function') {
+      await KeepAwake.keepAwake();
+    }
+  } catch (error) {
+    console.warn('[Fern] KeepAwake.keepAwake failed:', error);
+  }
+}
+
+async function allowScreenSleep() {
+  try {
+    const { KeepAwake } = getPlugins();
+    if (KeepAwake && typeof KeepAwake.allowSleep === 'function') {
+      await KeepAwake.allowSleep();
+    }
+  } catch (error) {
+    console.warn('[Fern] KeepAwake.allowSleep failed:', error);
+  }
 }
 
 function resetToNoModelState() {
@@ -486,7 +534,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '2.3.0';
+  let version = '2.4.0';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -623,6 +671,101 @@ function escapeHtml(str) {
 // ============================================================
 // 4. MODEL LOADING
 // ============================================================
+function isOutOfMemoryError(error) {
+  const text = String(
+    (error && (error.message || error.errorMessage || error.code || error.name)) || error || ''
+  ).toLowerCase();
+  return /bad_alloc|out of memory|\boom\b|not enough memory|cannot allocate|memory allocation|failed to allocate/.test(text);
+}
+
+function reportModelLoadError(error) {
+  if (error && error.fernCancelled) return;
+  const message = String((error && (error.message || error.errorMessage)) || error || '');
+  if (isOutOfMemoryError(error)) {
+    showErrorOverlay('Out of Memory', "Out of Memory: Your device couldn't handle this model. Please try a smaller model.");
+    return;
+  }
+  showErrorOverlay('Could not load model', message || 'Failed to load model');
+}
+
+async function getModelSizeBytes(modelPath) {
+  const { Filesystem } = getPlugins();
+  if (!Filesystem) return 0;
+
+  const candidates = [];
+  if (modelName) candidates.push({ path: modelName, directory: Directory.Data });
+  const rawPath = String(modelPath || '').replace(/^file:\/\//, '');
+  if (rawPath && rawPath !== modelName) candidates.push({ path: rawPath });
+
+  for (const candidate of candidates) {
+    try {
+      const stat = await Filesystem.stat(candidate);
+      const size = Number(stat && stat.size);
+      if (size > 0) return size;
+    } catch (error) {}
+  }
+  return 0;
+}
+
+async function getDeviceMemoryStats() {
+  const stats = { total: 0, available: 0, diskFree: 0, memUsed: 0 };
+
+  try {
+    const { Device } = getPlugins();
+    if (Device) {
+      const info = await Device.getInfo();
+      stats.total = Number(info && (info.memTotal || info.totalMemory || info.memoryTotal)) || 0;
+      stats.memUsed = Number(info && info.memUsed) || 0;
+      stats.diskFree = Number(info && (info.realDiskFree || info.diskFree)) || 0;
+      if (stats.total > 0) {
+        stats.available = Math.max(stats.total - stats.memUsed, 0);
+      }
+    }
+  } catch (error) {
+    console.warn('[Fern] Device.getInfo failed:', error);
+  }
+
+  // WebView fallback: navigator.deviceMemory is the approximate total RAM in GB.
+  if (!stats.total) {
+    const deviceMemory = Number(navigator.deviceMemory) || 0;
+    if (deviceMemory > 0) {
+      stats.total = deviceMemory * 1073741824;
+      stats.available = stats.total;
+    }
+  }
+
+  if (!stats.available) stats.available = stats.total;
+  return stats;
+}
+
+async function runMemoryPreflight(modelPath) {
+  const modelSize = await getModelSizeBytes(modelPath);
+  if (!modelSize) return;
+
+  const stats = await getDeviceMemoryStats();
+  console.log('[Fern] memory preflight:', {
+    modelSize,
+    availableRam: stats.available,
+    totalRam: stats.total,
+    diskFree: stats.diskFree,
+  });
+
+  if (!stats.available) return;
+  if (modelSize <= stats.available * 0.6) return;
+
+  const sizeGb = (modelSize / 1073741824).toFixed(2);
+  const proceed = await showRamWarning(
+    'Warning: This model is ' + sizeGb + 'GB. Your device may not have enough RAM to run it. ' +
+    'Loading it might crash the app. Do you want to proceed?'
+  );
+
+  if (!proceed) {
+    const error = new Error('Model load cancelled by user');
+    error.fernCancelled = true;
+    throw error;
+  }
+}
+
 async function loadModelFile(modelPath, notify, options) {
   const exactPath = !!(options && options.exact);
   const pro = llamaCppPro();
@@ -641,40 +784,48 @@ async function loadModelFile(modelPath, notify, options) {
   try { await pro.releaseAllLlama(); } catch (e) {}
   activeContext = null;
 
-  if (notify) notify('Initializing context: ' + modelName);
+  await keepScreenAwake();
+  try {
+    await runMemoryPreflight(modelPath);
 
-  // The FilePicker returns content:// URIs that the native loader cannot
-  // open directly. Downloaded models are resolved with Filesystem.getUri()
-  // and must be passed through unchanged (exactPath).
-  const candidates = exactPath
-    ? [modelPath]
-    : [modelPath.replace(/^(content|file):\/\//, ''), modelName].filter(Boolean);
+    if (notify) notify('Initializing context: ' + modelName);
 
-  let lastError = null;
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    try {
-      console.log('Available Plugins:', Object.keys(window.Capacitor.Plugins));
-      console.log('[Fern] pre-init:', {
-        'window.capacitorLlamaCpp': window.capacitorLlamaCpp,
-        nativeLlamaCpp: !!window.Capacitor.Plugins[LlamaCppPluginName],
-        resolvedRuntime: pro === window.capacitorLlamaCpp ? 'bundle' : 'native-bridge-fallback',
-        model: candidate,
-      });
-      const context = await pro.initLlama({
-        model: candidate,
-        n_ctx: 2048,
-        n_batch: 512,
-        n_threads: N_THREADS,
-        ctx_shift: true,
-      });
-      activeContext = context;
-      return context;
-    } catch (e) {
-      lastError = e;
+    // The FilePicker returns content:// URIs that the native loader cannot
+    // open directly. Downloaded models are resolved with Filesystem.getUri()
+    // and must be passed through unchanged (exactPath).
+    const candidates = exactPath
+      ? [modelPath]
+      : [modelPath.replace(/^(content|file):\/\//, ''), modelName].filter(Boolean);
+
+    let lastError = null;
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      try {
+        console.log('Available Plugins:', Object.keys(window.Capacitor.Plugins));
+        console.log('[Fern] pre-init:', {
+          'window.capacitorLlamaCpp': window.capacitorLlamaCpp,
+          nativeLlamaCpp: !!window.Capacitor.Plugins[LlamaCppPluginName],
+          resolvedRuntime: pro === window.capacitorLlamaCpp ? 'bundle' : 'native-bridge-fallback',
+          model: candidate,
+        });
+        const context = await pro.initLlama({
+          model: candidate,
+          n_ctx: 2048,
+          n_batch: 512,
+          n_threads: N_THREADS,
+          ctx_shift: true,
+        });
+        activeContext = context;
+        return context;
+      } catch (e) {
+        lastError = e;
+        if (isOutOfMemoryError(e)) break;
+      }
     }
+    throw lastError || new Error('Could not initialize model context');
+  } finally {
+    await allowScreenSleep();
   }
-  throw lastError || new Error('Could not initialize model context');
 }
 
 async function statModelInData(filename) {
@@ -712,7 +863,7 @@ async function downloadAndLoadModel(url, filename) {
       await clearDownloadNotification();
       hideOverlay();
       setSendEnabled(contextReady);
-      showErrorOverlay('Could not load model', error && error.message ? error.message : String(error));
+      if (!error || !error.fernCancelled) reportModelLoadError(error);
     }
     return;
   }
@@ -744,13 +895,22 @@ async function downloadAndLoadModel(url, filename) {
     showModelReadyNotification(filename);
   } catch (error) {
     console.error('Model download failed:', error);
-    try {
-      await Filesystem.deleteFile({ path: filename, directory: Directory.Data });
-    } catch (cleanupError) {}
+    const cancelled = !!(error && error.fernCancelled);
+    if (!cancelled) {
+      try {
+        await Filesystem.deleteFile({ path: filename, directory: Directory.Data });
+      } catch (cleanupError) {}
+    }
     await clearDownloadNotification();
     hideOverlay();
     setSendEnabled(contextReady);
-    showErrorOverlay('Download failed', error && error.message ? error.message : String(error));
+    if (!cancelled) {
+      if (isOutOfMemoryError(error)) {
+        showErrorOverlay('Out of Memory', "Out of Memory: Your device couldn't handle this model. Please try a smaller model.");
+      } else {
+        showErrorOverlay('Download failed', error && error.message ? error.message : String(error));
+      }
+    }
   }
 }
 
@@ -811,14 +971,14 @@ async function pickAndLoadModel() {
     onModelReady();
   } catch (error) {
     const message = String((error && error.message) || error || '');
-    if (/cancel/i.test(message)) {
+    if ((error && error.fernCancelled) || /cancel/i.test(message)) {
       hideOverlay();
       return;
     }
     console.error('Model load failed:', error);
     hideOverlay();
     setSendEnabled(contextReady);
-    showErrorOverlay('Could not load model', message || 'Failed to load model');
+    reportModelLoadError(error);
   }
 }
 
@@ -846,7 +1006,7 @@ async function initModel() {
       hideOverlay();
       setModelLabels('');
       setSendEnabled(false);
-      showErrorOverlay('Could not load model', error && error.message ? error.message : String(error));
+      if (!error || !error.fernCancelled) reportModelLoadError(error);
       return;
     }
   }
@@ -913,10 +1073,107 @@ function lastAssistantBubble() {
 // ============================================================
 // 6. GENERATION
 // ============================================================
-function buildQwenPrompt(history) {
-  return '<|im_start|>system\nYou are Fern, a helpful local AI.<|im_end|>\n' +
-    history.map((msg) => '<|im_start|>' + msg.role + '\n' + (msg.content || '') + '<|im_end|>\n').join('') +
-    '<|im_start|>assistant\n';
+const FERN_SYSTEM_PROMPT = 'You are Fern, a helpful local AI.';
+
+function buildChatMessages(history) {
+  const messages = [{ role: 'system', content: FERN_SYSTEM_PROMPT }];
+  (history || []).forEach((msg) => {
+    if (!msg || !msg.role) return;
+    messages.push({ role: msg.role, content: msg.content || '' });
+  });
+  return messages;
+}
+
+async function formatPromptWithNative(messages) {
+  const context = activeContext;
+  const pro = llamaCppPro();
+  const sources = [];
+  if (context) sources.push(context);
+  if (pro && pro !== context) sources.push(pro);
+
+  const methodNames = ['formatChat', 'applyChatTemplate', 'getFormattedChat'];
+  for (const source of sources) {
+    for (const methodName of methodNames) {
+      if (typeof source[methodName] !== 'function') continue;
+      try {
+        let result;
+        if (methodName === 'getFormattedChat' && source === pro && context && context.id != null) {
+          result = await source.getFormattedChat({ contextId: context.id, messages, params: {} });
+        } else {
+          result = await source[methodName](messages);
+        }
+        const prompt = typeof result === 'string'
+          ? result
+          : result && (result.prompt || result.formatted || result.text);
+        if (prompt && typeof prompt === 'string' && prompt.length > 0) {
+          console.log('[Fern] using native chat template via ' + methodName);
+          return prompt;
+        }
+      } catch (error) {
+        console.warn('[Fern] native ' + methodName + ' failed; trying fallback:', error);
+      }
+    }
+  }
+  return null;
+}
+
+function buildChatMLPrompt(messages) {
+  return messages.map((msg) =>
+    '<|im_start|>' + msg.role + '\n' + (msg.content || '') + '<|im_end|>\n'
+  ).join('') + '<|im_start|>assistant\n';
+}
+
+function buildLlama3Prompt(messages) {
+  let prompt = '<|begin_of_text|>';
+  messages.forEach((msg) => {
+    prompt += '<|start_header_id|>' + msg.role + '<|end_header_id|>\n\n' +
+      (msg.content || '') + '<|eot_id|>';
+  });
+  return prompt + '<|start_header_id|>assistant<|end_header_id|>\n\n';
+}
+
+function buildMistralPrompt(messages) {
+  let system = '';
+  const turns = [];
+  messages.forEach((msg) => {
+    if (msg.role === 'system') {
+      system = msg.content || '';
+    } else {
+      turns.push(msg);
+    }
+  });
+
+  let prompt = '';
+  let hasUserTurn = false;
+  turns.forEach((msg) => {
+    if (msg.role === 'user') {
+      const content = !hasUserTurn && system
+        ? system + '\n\n' + (msg.content || '')
+        : (msg.content || '');
+      prompt += '<s>[INST] ' + content + ' [/INST]';
+      hasUserTurn = true;
+    } else if (msg.role === 'assistant') {
+      if (!hasUserTurn) return;
+      prompt += ' ' + (msg.content || '') + '</s>';
+    }
+  });
+  return prompt;
+}
+
+function fallbackChatTemplate(messages) {
+  const name = (modelName || '').toLowerCase();
+  if (name.includes('llama')) return buildLlama3Prompt(messages);
+  if (name.includes('mistral')) return buildMistralPrompt(messages);
+  if (name.includes('qwen')) return buildChatMLPrompt(messages);
+  return buildChatMLPrompt(messages);
+}
+
+async function buildChatPrompt(history) {
+  const messages = buildChatMessages(history);
+  const nativePrompt = await formatPromptWithNative(messages);
+  if (nativePrompt) return nativePrompt;
+  console.log('[Fern] native chat template unavailable; using filename fallback for ' + (modelName || 'unknown model'));
+  return fallbackChatTemplate(messages);
 }
 
 function showTypingIndicator() {
@@ -968,12 +1225,13 @@ async function generateResponse(userPrompt) {
 
   isGenerating = true;
   setSendEnabled(false);
+  await keepScreenAwake();
 
   let streamed = false;
   try {
     await loadSettings();
 
-    const prompt = buildQwenPrompt(chatHistory);
+    const prompt = await buildChatPrompt(chatHistory);
     const result = await activeContext.completion({
       prompt,
       n_predict: appSettings.maxTokens,
@@ -998,11 +1256,18 @@ async function generateResponse(userPrompt) {
     chatContainer.scrollTop = chatContainer.scrollHeight;
   } catch (error) {
     console.error('Generation error:', error);
-    const message = '[Error: ' + (error.message || String(error)) + ']';
-    revealBubble(message);
-    bubbleText.innerText = message;
-    chatHistory[chatHistory.length - 1] = { role: 'assistant', content: message };
+    if (isOutOfMemoryError(error)) {
+      revealBubble('');
+      if (typing.parentNode) typing.remove();
+      showErrorOverlay('Out of Memory', "Out of Memory: Your device couldn't handle this model. Please try a smaller model.");
+    } else {
+      const message = '[Error: ' + (error.message || String(error)) + ']';
+      revealBubble(message);
+      bubbleText.innerText = message;
+      chatHistory[chatHistory.length - 1] = { role: 'assistant', content: message };
+    }
   } finally {
+    await allowScreenSleep();
     isGenerating = false;
     setSendEnabled(true);
   }
@@ -1089,6 +1354,10 @@ modelList.addEventListener('click', (event) => {
 
 // ERROR OVERLAY
 errorDismissBtn.addEventListener('click', closeErrorOverlay);
+
+// RAM WARNING MODAL
+ramWarningProceedBtn.addEventListener('click', () => resolveRamWarning(true));
+ramWarningCancelBtn.addEventListener('click', () => resolveRamWarning(false));
 
 // NEW CHAT
 newChatBtn.addEventListener('click', () => {

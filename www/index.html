@@ -96,6 +96,29 @@
   </div>
 </div>
 
+<!-- RAM Warning Overlay -->
+<div id="ram-warning-overlay" class="fixed inset-0 z-[108] flex-col items-center justify-center bg-black/80 px-4 backdrop-blur-sm" style="display: none;">
+  <div class="w-full max-w-md overflow-hidden rounded-xl border border-amber-500/40 bg-[#1a1508] shadow-[0_24px_64px_-16px_rgba(0,0,0,0.95)]">
+    <div class="border-b border-amber-500/20 bg-amber-500/[0.06] px-4 py-3">
+      <div>
+        <p class="font-mono text-[10px] uppercase tracking-[0.12em] text-amber-400">Memory Warning</p>
+        <h2 class="mt-0.5 text-[14px] font-semibold tracking-tight text-white">This model may be too large</h2>
+      </div>
+    </div>
+    <div class="px-4 py-4">
+      <p id="ram-warning-message" class="break-words font-mono text-[12px] leading-relaxed text-amber-100/90"></p>
+      <div class="mt-4 flex gap-2">
+        <button type="button" id="ram-warning-cancel" class="flex h-9 flex-1 items-center justify-center rounded-md border border-line bg-base text-[12.5px] font-medium text-zinc-300 transition hover:border-zinc-600 hover:text-white">
+          Cancel
+        </button>
+        <button type="button" id="ram-warning-proceed" class="flex h-9 flex-1 items-center justify-center rounded-md border border-amber-500/40 bg-amber-500/15 text-[12.5px] font-medium text-amber-200 transition hover:bg-amber-500/25">
+          Proceed
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Error Overlay -->
 <div id="error-overlay" class="fixed inset-0 z-[105] flex-col items-center justify-center bg-black/80 px-4 backdrop-blur-sm" style="display: none;">
   <div class="w-full max-w-md overflow-hidden rounded-xl border border-red-500/40 bg-[#1a0d0d] shadow-[0_24px_64px_-16px_rgba(0,0,0,0.95)]">
@@ -195,7 +218,7 @@
           <h3 class="text-[13px] font-semibold tracking-tight text-white">About</h3>
           <div class="mt-3 flex items-center justify-between">
             <span class="font-mono text-[10.5px] uppercase tracking-[0.1em] text-zinc-500">Version</span>
-            <span id="app-version" class="font-mono text-[12px] text-zinc-300">1.5.1</span>
+            <span id="app-version" class="font-mono text-[12px] text-zinc-300">2.4.0</span>
           </div>
           <a href="https://github.com/swiss9/fern" target="_blank" rel="noopener noreferrer"
              class="mt-3 flex h-9 w-full items-center justify-center rounded-md border border-line bg-base font-mono text-[11.5px] text-zinc-300 transition hover:border-zinc-600 hover:text-white">

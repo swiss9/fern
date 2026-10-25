@@ -480,7 +480,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '1.5.1';
+  let version = '2.2.0';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -617,7 +617,8 @@ function escapeHtml(str) {
 // ============================================================
 // 4. MODEL LOADING
 // ============================================================
-async function loadModelFile(modelPath, notify) {
+async function loadModelFile(modelPath, notify, options) {
+  const exactPath = !!(options && options.exact);
   const pro = llamaCppPro();
   if (!pro) {
     const diag = {
@@ -637,12 +638,11 @@ async function loadModelFile(modelPath, notify) {
   if (notify) notify('Initializing context: ' + modelName);
 
   // The FilePicker returns content:// URIs that the native loader cannot
-  // open directly. Try the path first, then the bare filename, which the
-  // native side resolves against Download/, Documents/ and app dirs.
-  const candidates = [
-    modelPath.replace(/^(content|file):\/\//, ''),
-    modelName,
-  ];
+  // open directly. Downloaded models are resolved with Filesystem.getUri()
+  // and must be passed through unchanged (exactPath).
+  const candidates = exactPath
+    ? [modelPath]
+    : [modelPath.replace(/^(content|file):\/\//, ''), modelName].filter(Boolean);
 
   let lastError = null;
   for (const candidate of candidates) {
@@ -714,10 +714,20 @@ async function waitForDownload(id, url, filename) {
   };
 
   const updateProgress = (progress, bytesWritten, bytesTotal) => {
-    const percent = Math.max(0, Math.min(100, Math.round(Number(progress) || 0)));
+    const written = Number(bytesWritten) || 0;
+    const total = Number(bytesTotal) || 0;
+    let value = Number(progress);
+    if (!Number.isFinite(value)) value = 0;
+    if (total > 0 && written > 0) {
+      value = (written / total) * 100;
+    } else if (value > 0 && value <= 1) {
+      // The Android DownloadManager plugin reports progress as a 0..1 fraction.
+      value = value * 100;
+    }
+    const percent = Math.max(0, Math.min(100, Math.round(value)));
     let detail = '';
-    if (bytesWritten) {
-      detail = ' (' + formatBytes(bytesWritten) + (bytesTotal ? ' / ' + formatBytes(bytesTotal) : '') + ')';
+    if (written) {
+      detail = ' (' + formatBytes(written) + (total ? ' / ' + formatBytes(total) : '') + ')';
     }
     progressText.innerText = 'Downloading ' + filename + ': ' + percent + '%' + detail;
     progressBar.style.width = percent + '%';
@@ -743,8 +753,8 @@ async function waitForDownload(id, url, filename) {
       destination: filename,
       notification: 'hidden',
     });
-    if (task && task.state === 'DONE') finish(resolveDone);
-    if (task && task.state === 'ERROR') finish(rejectDone, new Error('Download failed'));
+    if (task && (task.state === 'DONE' || task.status === 2)) finish(resolveDone);
+    if (task && (task.state === 'ERROR' || task.status === 3)) finish(rejectDone, new Error('Download failed'));
 
     // Safety net in case the WebView missed an event while backgrounded.
     pollId = setInterval(async () => {
@@ -752,13 +762,15 @@ async function waitForDownload(id, url, filename) {
       try {
         const status = await CapacitorDownloader.checkStatus({ id });
         if (!status) return;
-        if (status.state === 'DONE') {
+        const state = status.state || status.status;
+        if (state === 'DONE' || state === 2) {
           updateProgress(100);
           finish(resolveDone);
-        } else if (status.state === 'ERROR') {
-          finish(rejectDone, new Error('Download failed'));
+        } else if (state === 'ERROR' || state === 3) {
+          finish(rejectDone, new Error(status.reasonText || 'Download failed'));
         } else {
-          updateProgress(status.progress);
+          const written = status.bytesWritten != null ? status.bytesWritten : status.bytesDownloaded;
+          updateProgress(status.progress, written, status.bytesTotal);
         }
       } catch (error) {}
     }, 1500);
@@ -796,6 +808,12 @@ async function moveDownloadedFileToData(filename) {
   } catch (error) {
     console.warn('Could not remove staged download:', error);
   }
+
+  // Resolve the exact file:// URI instead of guessing how the native loader
+  // will map the filename to app storage.
+  const { uri } = await Filesystem.getUri({ path: filename, directory: Directory.Data });
+  if (!uri) throw new Error('Could not resolve the saved model path');
+  return uri;
 }
 
 async function downloadAndLoadModel(url, filename) {
@@ -807,7 +825,9 @@ async function downloadAndLoadModel(url, filename) {
     showOverlay('Loading ' + filename + ' (this can take a while)...');
     progressBar.style.width = '100%';
     try {
-      await loadModelFile(filename);
+      const { uri } = await Filesystem.getUri({ path: filename, directory: Directory.Data });
+      if (!uri) throw new Error('Could not resolve the saved model path');
+      await loadModelFile(uri, null, { exact: true });
       onModelReady();
       await updateStorageMeter();
     } catch (error) {
@@ -840,11 +860,11 @@ async function downloadAndLoadModel(url, filename) {
     progressText.innerText = 'Download complete: ' + filename;
     progressBar.style.width = '100%';
     showOverlay('Saving ' + filename + ' to private storage...');
-    await moveDownloadedFileToData(filename);
+    const modelUri = await moveDownloadedFileToData(filename);
 
     modelName = filename;
     showOverlay('Loading ' + filename + ' (this can take a while)...');
-    await loadModelFile(filename);
+    await loadModelFile(modelUri, null, { exact: true });
     onModelReady();
     await updateStorageMeter();
     showModelReadyNotification(filename);

@@ -1196,7 +1196,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '3.0.6';
+  let version = '3.0.7';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -1642,10 +1642,10 @@ async function downloadAndLoadModel(url, filename) {
       if (!progress || progress.type === 'upload') return;
       if (progress.url && url && progress.url !== url) return;
 
-      const loaded = Number(progress.bytes) || 0;
-      const total = Number(progress.contentLength) || 0;
+      const loaded = Number(progress.bytes != null ? progress.bytes : progress.bytesLoaded) || 0;
+      const total = Number(progress.contentLength != null ? progress.contentLength : progress.totalBytes) || 0;
 
-      if (!progress.lengthComputable || total <= 0) {
+      if (total <= 0) {
         progressText.innerText = 'Downloading: ' + formatBytes(loaded);
         return;
       }
@@ -1655,7 +1655,7 @@ async function downloadAndLoadModel(url, filename) {
       progressBar.style.width = percentage + '%';
     });
 
-    const result = await FileTransfer.downloadFile({
+    await FileTransfer.downloadFile({
       url,
       path: uri,
       progress: true,
@@ -1666,6 +1666,22 @@ async function downloadAndLoadModel(url, filename) {
       return;
     }
 
+    let savedStat = null;
+    try {
+      savedStat = await Filesystem.stat({ path: filename, directory: Directory.Data });
+    } catch (statError) {
+      throw new Error('Download failed: File not saved properly.');
+    }
+    if (!savedStat || Number(savedStat.size) <= 0) {
+      throw new Error('Download failed: File not saved properly.');
+    }
+
+    const uriResult = await Filesystem.getUri({ path: filename, directory: Directory.Data });
+    if (!uriResult || !uriResult.uri) {
+      throw new Error('Download failed: File not saved properly.');
+    }
+    const rawPath = uriResult.uri.replace('file://', '');
+
     if (progressListener) {
       try {
         await progressListener.remove();
@@ -1675,14 +1691,10 @@ async function downloadAndLoadModel(url, filename) {
     progressBar.style.width = '100%';
     progressBar.style.display = 'none';
 
-    if (!result || !result.path) {
-      throw new Error('Download did not return a saved file path');
-    }
-
     modelName = filename;
     modelDisplayName = filename;
     showOverlay('Loading ' + filename + ' (this can take a while)...');
-    await loadModelFile(result.path, null, { exact: true });
+    await loadModelFile(rawPath, null, { exact: true });
     await saveActiveModelName(filename);
     await onModelReady();
     await updateStorageMeter();

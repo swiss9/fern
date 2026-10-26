@@ -160,6 +160,7 @@ const repeatPenaltySlider = document.getElementById('repeat-penalty-slider');
 const repeatPenaltyValue = document.getElementById('repeat-penalty-value');
 const modelList = document.getElementById('model-list');
 const modelListEmpty = document.getElementById('model-list-empty');
+const modelSelectorList = document.getElementById('model-selector-list');
 const deleteAllModelsBtn = document.getElementById('delete-all-models-btn');
 const settingsStorageTotal = document.getElementById('settings-storage-total');
 const appVersionEl = document.getElementById('app-version');
@@ -202,6 +203,41 @@ const ACTIVE_MODEL_KEY = 'activeModelName';
 const SYSTEM_PROMPT_PREFIX = 'systemPrompt_';
 const MODEL_ALIASES_KEY = 'fern.modelAliases';
 const DEFAULT_SETTINGS = { temperature: 0.6, maxTokens: 512, repeatPenalty: 1.15 };
+
+const MODEL_CATALOG = [
+  {
+    id: 'qwen2.5-0.5b',
+    display: 'qwen2.5-0.5b.gguf',
+    file: 'qwen2.5-0.5b-instruct-q4_k_m.gguf',
+    size: '[400MB]',
+    power: 1,
+    url: 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf',
+  },
+  {
+    id: 'llama-3.2-1b',
+    display: 'llama-3.2-1b.gguf',
+    file: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf',
+    size: '[780MB]',
+    power: 2,
+    url: 'https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf',
+  },
+  {
+    id: 'llama-3.2-3b',
+    display: 'llama-3.2-3b.gguf',
+    file: 'Llama-3.2-3B-Instruct-Q4_K_M.gguf',
+    size: '[2.0GB]',
+    power: 3,
+    url: 'https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf',
+  },
+  {
+    id: 'qwen2.5-3b',
+    display: 'qwen2.5-3b.gguf',
+    file: 'qwen2.5-3b-instruct-q4_k_m.gguf',
+    size: '[2.0GB]',
+    power: 4,
+    url: 'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf',
+  },
+];
 let appSettings = { ...DEFAULT_SETTINGS };
 let contextReady = false;
 let isGenerating = false;
@@ -1023,6 +1059,33 @@ async function getInstalledModels() {
   }
   models.sort((a, b) => a.name.localeCompare(b.name));
   return models;
+}
+
+function modelPowerBars(level) {
+  let bars = '';
+  for (let i = 0; i < 4; i++) {
+    const on = i < level;
+    bars += '<span class="' + (on ? 'text-white' : 'text-zinc-700') + '">' + (on ? '■' : '□') + '</span>';
+  }
+  return '<span class="flex shrink-0 items-center gap-[3px] font-mono text-[10px] leading-none">' + bars + '</span>';
+}
+
+function renderModelSelector() {
+  if (!modelSelectorList) return;
+  const deviceMemory = Number(navigator.deviceMemory) || 0;
+  const recId = deviceMemory > 6 ? 'llama-3.2-3b' : 'llama-3.2-1b';
+
+  modelSelectorList.innerHTML = MODEL_CATALOG.map((model) => {
+    const rec = model.id === recId
+      ? '<span class="shrink-0 bg-white px-1 font-mono text-[9px] font-bold leading-4 text-black">[REC]</span>'
+      : '<span class="w-[31px] shrink-0"></span>';
+    return '<button type="button" data-model-id="' + model.id + '" class="model-select-row flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left font-mono transition hover:bg-white/[0.04]">' +
+      modelPowerBars(model.power) +
+      '<span class="min-w-0 flex-1 truncate text-[11px] text-zinc-300">' + escapeHtml(model.display) + '</span>' +
+      '<span class="shrink-0 text-[10px] text-zinc-500">' + escapeHtml(model.size) + '</span>' +
+      rec +
+    '</button>';
+  }).join('');
 }
 
 function renderModelList(models) {
@@ -2008,6 +2071,7 @@ async function generateResponse(userPrompt) {
       temperature: appSettings.temperature,
       top_k: 40,
       penalty_repeat: appSettings.repeatPenalty,
+      repeat_penalty: appSettings.repeatPenalty,
     }, (data) => {
       const tok = (data && (data.token || data.content)) || '';
       if (tok) {
@@ -2253,16 +2317,18 @@ document.getElementById('local-model-btn').addEventListener('click', () => {
   pickAndLoadModel();
 });
 
-// RECOMMENDED MODEL DOWNLOADS
-document.querySelectorAll('.model-download-btn').forEach((button) => {
-  button.addEventListener('click', () => {
-    const url = button.dataset.url;
-    const name = button.dataset.name;
+// MODEL SELECTOR
+if (modelSelectorList) {
+  modelSelectorList.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-model-id]');
+    if (!button) return;
+    const model = MODEL_CATALOG.find((entry) => entry.id === button.dataset.modelId);
+    if (!model) return;
     const details = button.closest('details');
     if (details) details.open = false;
-    if (url && name) downloadAndLoadModel(url, name);
+    downloadAndLoadModel(model.url, model.file);
   });
-});
+}
 
 // SIDEBAR MODEL DROPDOWN
 document.querySelectorAll('details').forEach((details) => {
@@ -2438,6 +2504,7 @@ async function initApp() {
     updateAppVersion();
     requestStartupPermissions();
     updateStorageLocation();
+    renderModelSelector();
 
     // 1. Restore generation settings and model aliases.
     await loadSettings();

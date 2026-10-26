@@ -366,30 +366,14 @@
         </summary>
 
         <div class="absolute bottom-[calc(100%+8px)] left-0 right-0 z-50 overflow-hidden rounded-lg border border-line bg-panel shadow-[0_16px_48px_-12px_rgba(0,0,0,0.9)]">
-          <p class="border-b border-line px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-zinc-600">Model</p>
+          <div id="model-selector-list" class="p-1"></div>
 
-          <div class="p-1">
-            <button type="button" data-url="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf" data-name="qwen2.5-0.5b-instruct-q4_k_m.gguf" class="model-download-btn flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-400 transition hover:bg-white/[0.04] hover:text-white">
-              <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-line bg-base font-mono text-[9px] text-zinc-400">Q</span>
-              <span class="truncate">Qwen 2.5 0.5B</span>
-              <span class="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">Q4_K_M · 398MB</span>
-            </button>
-
-            <button type="button" data-url="https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf" data-name="Llama-3.2-1B-Instruct-Q4_K_M.gguf" class="model-download-btn flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-400 transition hover:bg-white/[0.04] hover:text-white">
-              <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-line bg-base font-mono text-[9px] text-zinc-400">L</span>
-              <span class="truncate">Llama 3.2 1B</span>
-              <span class="ml-auto shrink-0 font-mono text-[10px] text-zinc-600">Q4_K_M · 808MB</span>
-            </button>
-
-            <button type="button" id="local-model-btn" class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-zinc-500 transition hover:bg-white/[0.04] hover:text-white">
-              <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-dashed border-line bg-base">
-                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              </span>
-              <span class="truncate">Add local model…</span>
+          <div class="border-t border-line p-1">
+            <button type="button" id="local-model-btn" class="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left font-mono text-[11px] text-zinc-500 transition hover:bg-white/[0.04] hover:text-white">
+              <span class="shrink-0 text-zinc-600">+</span>
+              <span class="truncate">LOCAL .GGUF</span>
             </button>
           </div>
-
-          <p class="border-t border-line px-3 py-2 font-mono text-[10px] leading-relaxed text-zinc-600">Inference runs on-device via llama.cpp.</p>
         </div>
       </details>
     </div>

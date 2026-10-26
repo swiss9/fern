@@ -60,6 +60,11 @@ function createNativeLlamaBridge() {
     async release() {
       try { await native.releaseContext({ contextId: id }); } catch (e) {}
     },
+    async stopCompletion() {
+      if (typeof native.stopCompletion === 'function') {
+        await native.stopCompletion({ contextId: id });
+      }
+    },
   });
 
   return {
@@ -108,11 +113,12 @@ const getPlugins = () => {
     Device: window.Capacitor.Plugins.Device,
     Preferences: window.Capacitor.Plugins.Preferences,
     KeepAwake: window.Capacitor.Plugins.KeepAwake,
+    Share: window.Capacitor.Plugins.Share,
   };
 };
 
 // Filesystem.Directory enum values are not exposed on the global bridge.
-const Directory = { Data: 'DATA', External: 'EXTERNAL' };
+const Directory = { Data: 'DATA', Cache: 'CACHE', External: 'EXTERNAL' };
 
 // ============================================================
 // 2. UI ELEMENTS
@@ -154,22 +160,44 @@ const deleteAllModelsBtn = document.getElementById('delete-all-models-btn');
 const settingsStorageTotal = document.getElementById('settings-storage-total');
 const appVersionEl = document.getElementById('app-version');
 const sidebarVersionEl = document.getElementById('sidebar-version');
+const chatNav = document.getElementById('chat-nav');
+const exportChatBtn = document.getElementById('export-chat-btn');
+const importChatBtn = document.getElementById('import-chat-btn');
+const quickSettingsBtn = document.getElementById('quick-settings-btn');
+const quickSettingsSheet = document.getElementById('quick-settings-sheet');
+const quickSettingsBackdrop = document.getElementById('quick-settings-backdrop');
+const closeQuickSettingsBtn = document.getElementById('close-quick-settings-btn');
+const systemPromptInput = document.getElementById('system-prompt-input');
+const systemPromptStatus = document.getElementById('system-prompt-status');
+const renameModelInput = document.getElementById('rename-model-input');
+const renameModelBtn = document.getElementById('rename-model-btn');
+const renameModelStatus = document.getElementById('rename-model-status');
+const SEND_ICON_HTML = sendBtn.innerHTML;
+const STOP_ICON_HTML =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>';
 
 // ============================================================
 // 3. STATE
 // ============================================================
-const N_THREADS = Math.max(2, (navigator.hardwareConcurrency || 4) - 1);
 const DOWNLOAD_NOTIFICATION_ID = 1001;
 const RESPONSE_NOTIFICATION_ID = 1002;
 const SETTINGS_KEY = 'fern.settings';
-const CHAT_HISTORY_KEY = 'chatHistory';
+const SESSIONS_KEY = 'fern.sessions';
+const LEGACY_CHAT_HISTORY_KEY = 'chatHistory';
 const ACTIVE_MODEL_KEY = 'activeModelName';
+const SYSTEM_PROMPT_PREFIX = 'systemPrompt_';
+const MODEL_DISPLAY_NAME_PREFIX = 'modelDisplayName_';
 const DEFAULT_SETTINGS = { temperature: 0.7, maxTokens: 512 };
 let appSettings = { ...DEFAULT_SETTINGS };
 let contextReady = false;
 let isGenerating = false;
-let chatHistory = [];
+let generationAbortRequested = false;
+let sessions = {};
+let activeSessionId = '';
 let modelName = '';
+let modelDisplayName = '';
+let customSystemPrompt = '';
+let pendingLegacyMessages = null;
 let activeContext = null;
 let chatSaveChain = Promise.resolve();
 
@@ -258,9 +286,13 @@ async function allowScreenSleep() {
 function resetToNoModelState() {
   contextReady = false;
   modelName = '';
+  modelDisplayName = '';
+  activeSessionId = '';
   setModelLabels('');
   setSendEnabled(false);
   setMultimodalSupport(false);
+  renderSidebarSessions();
+  messagesEl.innerHTML = '';
   showEmptyState();
   setEmptyStateMessage('No local model loaded.');
 }
@@ -276,6 +308,7 @@ function setMultimodalSupport(enabled) {
 }
 
 function setSendEnabled(enabled) {
+  if (isGenerating) return;
   sendBtn.disabled = !enabled;
   if (enabled) {
     sendBtn.classList.remove('opacity-50', 'cursor-not-allowed');
@@ -284,18 +317,34 @@ function setSendEnabled(enabled) {
   }
 }
 
+function updateSendButton() {
+  if (isGenerating) {
+    sendBtn.disabled = false;
+    sendBtn.classList.remove('bg-white', 'text-base', 'hover:bg-zinc-200', 'active:bg-zinc-300', 'opacity-50', 'cursor-not-allowed');
+    sendBtn.classList.add('bg-red-500', 'text-white', 'hover:bg-red-400', 'active:bg-red-600');
+    sendBtn.innerHTML = STOP_ICON_HTML;
+    sendBtn.setAttribute('aria-label', 'Stop generating');
+  } else {
+    sendBtn.classList.remove('bg-red-500', 'text-white', 'hover:bg-red-400', 'active:bg-red-600');
+    sendBtn.classList.add('bg-white', 'text-base', 'hover:bg-zinc-200', 'active:bg-zinc-300');
+    sendBtn.innerHTML = SEND_ICON_HTML;
+    sendBtn.setAttribute('aria-label', 'Send message');
+    setSendEnabled(contextReady);
+  }
+}
+
 function setEmptyStateMessage(text) {
   emptyStateText.innerText = text;
 }
 
 function showEmptyState() {
-  if (chatHistory.length > 0) {
+  if (activeMessages().length > 0) {
     emptyState.classList.add('hidden');
     return;
   }
   emptyState.classList.remove('hidden');
   if (contextReady && modelName) {
-    setEmptyStateMessage('Ready. Ask ' + modelName + ' anything.');
+    setEmptyStateMessage('Ready. Ask ' + (modelDisplayName || modelName) + ' anything.');
     mainLoadBtn.classList.add('hidden');
   } else {
     setEmptyStateMessage('No local model loaded.');
@@ -308,9 +357,9 @@ function hideEmptyState() {
 }
 
 function setModelLabels(name) {
-  const label = name || 'No model';
-  document.getElementById('sidebar-model-label').innerText = label;
-  document.getElementById('active-model-chip').innerText = name ? name.toUpperCase() : 'NO MODEL';
+  const display = name ? (modelDisplayName || name) : '';
+  document.getElementById('sidebar-model-label').innerText = display || 'No model';
+  document.getElementById('active-model-chip').innerText = display ? display.toUpperCase() : 'NO MODEL';
   setMultimodalSupport(!!name && isMultimodal(name));
 }
 
@@ -329,43 +378,343 @@ function getPreferencesPlugin() {
   }
 }
 
-function saveChatHistory() {
-  const serialized = JSON.stringify(chatHistory);
+function normalizeMessageList(list) {
+  return (Array.isArray(list) ? list : [])
+    .filter((message) =>
+      message &&
+      typeof message.role === 'string' &&
+      typeof message.content === 'string' &&
+      (message.role === 'user' || message.role === 'assistant')
+    )
+    .map((message) => ({ role: message.role, content: message.content }));
+}
+
+function normalizeSessionsData(parsed) {
+  const result = {};
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return result;
+
+  Object.keys(parsed).forEach((model) => {
+    const list = parsed[model];
+    if (!Array.isArray(list)) return;
+    result[model] = list
+      .filter((session) => session && typeof session === 'object')
+      .map((session, index) => ({
+        id: typeof session.id === 'string' && session.id
+          ? session.id
+          : 's_' + Date.now().toString(36) + '_' + index,
+        title: typeof session.title === 'string' && session.title.trim()
+          ? session.title.trim()
+          : 'New chat',
+        messages: normalizeMessageList(session.messages),
+      }));
+  });
+
+  return result;
+}
+
+function createSessionId() {
+  return 's_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
+}
+
+function ensureModelSessions(name) {
+  if (!name) return [];
+  if (!Array.isArray(sessions[name])) sessions[name] = [];
+  return sessions[name];
+}
+
+function getActiveSession() {
+  if (!modelName) return null;
+  const list = Array.isArray(sessions[modelName]) ? sessions[modelName] : [];
+  return list.find((session) => session.id === activeSessionId) || null;
+}
+
+function activeMessages() {
+  const session = getActiveSession();
+  return session && Array.isArray(session.messages) ? session.messages : [];
+}
+
+function createSession(options) {
+  const opts = options || {};
+  if (!modelName) return null;
+
+  const session = {
+    id: createSessionId(),
+    title: opts.title || 'New chat',
+    messages: normalizeMessageList(opts.messages),
+  };
+
+  const list = ensureModelSessions(modelName);
+  if (opts.append) list.push(session);
+  else list.unshift(session);
+
+  if (opts.select !== false) {
+    activeSessionId = session.id;
+    renderSidebarSessions();
+    renderSessionMessages();
+  }
+
+  saveSessions();
+  return session;
+}
+
+function updateActiveSessionTitle(text) {
+  const session = getActiveSession();
+  if (!session) return;
+  const title = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!title || (session.title && session.title !== 'New chat')) return;
+  session.title = title.slice(0, 48) || 'New chat';
+  renderSidebarSessions();
+}
+
+function selectSession(id) {
+  if (!modelName) return;
+  const list = ensureModelSessions(modelName);
+  const session = list.find((entry) => entry.id === id);
+  if (!session) return;
+  activeSessionId = session.id;
+  renderSidebarSessions();
+  renderSessionMessages();
+}
+
+async function deleteSession(id) {
+  if (!modelName) return;
+  const list = ensureModelSessions(modelName);
+  const index = list.findIndex((session) => session.id === id);
+  if (index < 0) return;
+  if (!confirm('Delete this chat?')) return;
+
+  list.splice(index, 1);
+
+  if (activeSessionId === id) {
+    if (list.length > 0) {
+      activeSessionId = list[0].id;
+    } else {
+      const session = {
+        id: createSessionId(),
+        title: 'New chat',
+        messages: [],
+      };
+      list.push(session);
+      activeSessionId = session.id;
+    }
+    renderSessionMessages();
+  }
+
+  renderSidebarSessions();
+  await saveSessions();
+}
+
+function renderSessionMessages() {
+  messagesEl.innerHTML = '';
+  const messages = activeMessages();
+  if (messages.length === 0) {
+    showEmptyState();
+    return;
+  }
+  hideEmptyState();
+  messages.forEach((message) => {
+    appendMessage(message.role, message.content, { persist: false });
+  });
+  chatContainer.scrollTop = chatContainer.scrollHeight;
+}
+
+function renderSidebarSessions() {
+  if (!chatNav) return;
+
+  if (!modelName) {
+    chatNav.innerHTML = '<p class="px-2 py-2 font-mono text-[10.5px] leading-relaxed text-zinc-600">Load a model to see your chats.</p>';
+    return;
+  }
+
+  const list = Array.isArray(sessions[modelName]) ? sessions[modelName] : [];
+  if (list.length === 0) {
+    chatNav.innerHTML = '<p class="px-2 py-2 font-mono text-[10.5px] leading-relaxed text-zinc-600">No chats for this model yet.</p>';
+    return;
+  }
+
+  chatNav.innerHTML = list.map((session) => {
+    const active = session.id === activeSessionId;
+    return '<div class="group/session relative mb-0.5">' +
+      '<button type="button" data-session-id="' + escapeHtml(session.id) + '" class="flex w-full items-center gap-2 rounded-md py-2 pl-2.5 pr-8 text-left transition ' +
+        (active ? 'bg-white/[0.07] text-white' : 'text-zinc-400 hover:bg-white/[0.03] hover:text-white') + '">' +
+        '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 ' + (active ? 'text-zinc-300' : 'text-zinc-600') + '"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' +
+        '<span class="truncate text-[12.5px]">' + escapeHtml(session.title || 'New chat') + '</span>' +
+      '</button>' +
+      '<button type="button" data-delete-session-id="' + escapeHtml(session.id) + '" aria-label="Delete chat" class="absolute right-1 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-zinc-600 opacity-60 transition hover:bg-white/5 hover:text-red-400 group-hover/session:opacity-100">' +
+        '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>' +
+      '</button>' +
+    '</div>';
+  }).join('');
+}
+
+function saveSessions() {
+  const serialized = JSON.stringify(sessions);
   chatSaveChain = chatSaveChain.then(async () => {
     try {
       const Preferences = getPreferencesPlugin();
       if (!Preferences) return;
-      await Preferences.set({ key: CHAT_HISTORY_KEY, value: serialized });
+      await Preferences.set({ key: SESSIONS_KEY, value: serialized });
     } catch (error) {
-      console.warn('Could not save chat history:', error);
+      console.warn('Could not save chat sessions:', error);
     }
   });
   return chatSaveChain;
 }
 
-async function loadChatHistory() {
+async function loadSessions() {
   try {
     const Preferences = getPreferencesPlugin();
     if (!Preferences) return;
-    const { value } = await Preferences.get({ key: CHAT_HISTORY_KEY });
-    if (!value) return;
 
-    const parsed = JSON.parse(value);
-    if (!Array.isArray(parsed)) return;
+    const { value } = await Preferences.get({ key: SESSIONS_KEY });
+    if (value) {
+      try {
+        sessions = normalizeSessionsData(JSON.parse(value));
+      } catch (error) {
+        console.warn('Could not parse saved sessions:', error);
+        sessions = {};
+      }
+      return;
+    }
 
-    const restored = parsed.filter((message) =>
-      message && typeof message.role === 'string' && typeof message.content === 'string'
-    );
-    if (!restored.length) return;
-
-    chatHistory = restored;
-    messagesEl.innerHTML = '';
-    chatHistory.forEach((message) => {
-      appendMessage(message.role, message.content, { persist: false });
-    });
-    hideEmptyState();
+    // One-time migration from the flat v2 chat history.
+    const legacy = await Preferences.get({ key: LEGACY_CHAT_HISTORY_KEY });
+    if (legacy && legacy.value) {
+      try {
+        const parsed = JSON.parse(legacy.value);
+        if (Array.isArray(parsed)) {
+          const messages = normalizeMessageList(parsed);
+          if (messages.length > 0) pendingLegacyMessages = messages;
+        }
+      } catch (error) {
+        console.warn('Could not parse legacy chat history:', error);
+      }
+    }
   } catch (error) {
-    console.warn('Could not load chat history:', error);
+    console.warn('Could not load chat sessions:', error);
+  }
+}
+
+async function clearLegacyChatHistory() {
+  try {
+    const Preferences = getPreferencesPlugin();
+    if (Preferences) await Preferences.remove({ key: LEGACY_CHAT_HISTORY_KEY });
+  } catch (error) {
+    console.warn('Could not clear legacy chat history:', error);
+  }
+}
+
+async function activateModelSessions() {
+  if (!modelName) {
+    activeSessionId = '';
+    renderSidebarSessions();
+    renderSessionMessages();
+    return;
+  }
+
+  const list = ensureModelSessions(modelName);
+
+  if (list.length === 0) {
+    if (pendingLegacyMessages && pendingLegacyMessages.length > 0) {
+      const session = {
+        id: createSessionId(),
+        title: 'Restored chat',
+        messages: pendingLegacyMessages,
+      };
+      list.push(session);
+      pendingLegacyMessages = null;
+      await clearLegacyChatHistory();
+    } else {
+      list.push({ id: createSessionId(), title: 'New chat', messages: [] });
+    }
+    activeSessionId = list[0].id;
+  } else if (!list.some((session) => session.id === activeSessionId)) {
+    activeSessionId = list[0].id;
+  }
+
+  renderSidebarSessions();
+  renderSessionMessages();
+  saveSessions();
+}
+
+function getSystemPromptKey() {
+  return SYSTEM_PROMPT_PREFIX + modelName;
+}
+
+function getModelDisplayNameKey() {
+  return MODEL_DISPLAY_NAME_PREFIX + modelName;
+}
+
+async function loadModelPersonalization() {
+  customSystemPrompt = '';
+  modelDisplayName = modelName;
+  if (!modelName) {
+    updatePersonalizationControls();
+    return;
+  }
+
+  try {
+    const Preferences = getPreferencesPlugin();
+    if (Preferences) {
+      const displayName = await Preferences.get({ key: getModelDisplayNameKey() });
+      if (displayName.value && displayName.value.trim()) {
+        modelDisplayName = displayName.value.trim();
+      }
+      const prompt = await Preferences.get({ key: getSystemPromptKey() });
+      customSystemPrompt = prompt.value || '';
+    }
+  } catch (error) {
+    console.warn('Could not load model personalization:', error);
+  }
+
+  updatePersonalizationControls();
+}
+
+function updatePersonalizationControls() {
+  if (systemPromptInput) {
+    systemPromptInput.value = customSystemPrompt || '';
+    systemPromptInput.disabled = !modelName;
+  }
+  if (systemPromptStatus) {
+    systemPromptStatus.innerText = modelName
+      ? 'Saved for ' + (modelDisplayName || modelName) + '.'
+      : 'Load a model to customize its personality.';
+  }
+  if (renameModelInput) {
+    renameModelInput.value = modelDisplayName && modelDisplayName !== modelName ? modelDisplayName : '';
+    renameModelInput.disabled = !modelName;
+    renameModelInput.placeholder = modelName ? modelName : 'Display name';
+  }
+  if (renameModelBtn) renameModelBtn.disabled = !modelName;
+  if (renameModelStatus) {
+    renameModelStatus.innerText = modelName
+      ? 'File: ' + modelName
+      : 'No active model.';
+  }
+}
+
+async function renameActiveModel() {
+  if (!modelName || !renameModelInput) return;
+  const value = renameModelInput.value.trim();
+  if (!value) return;
+
+  try {
+    const Preferences = getPreferencesPlugin();
+    if (!Preferences) return;
+    if (value === modelName) {
+      await Preferences.remove({ key: getModelDisplayNameKey() });
+      modelDisplayName = modelName;
+    } else {
+      await Preferences.set({ key: getModelDisplayNameKey(), value });
+      modelDisplayName = value;
+    }
+    setModelLabels(modelName);
+    updatePersonalizationControls();
+    renderSessionMessages();
+    if (systemPromptStatus) systemPromptStatus.innerText = 'Saved for ' + modelDisplayName + '.';
+  } catch (error) {
+    console.warn('Could not rename model:', error);
+    showErrorOverlay('Rename failed', error && error.message ? error.message : String(error));
   }
 }
 
@@ -563,11 +912,11 @@ async function updateStorageMeter() {
   try {
     const models = await getInstalledModels();
     const total = models.reduce((sum, model) => sum + model.size, 0);
-    storageUsage.innerText = total > 0 ? formatBytes(total) : 'No models';
+    if (storageUsage) storageUsage.innerText = total > 0 ? formatBytes(total) : 'No models';
     if (settingsStorageTotal) settingsStorageTotal.innerText = formatBytes(total);
     return total;
   } catch (error) {
-    storageUsage.innerText = '';
+    if (storageUsage) storageUsage.innerText = '';
     return 0;
   }
 }
@@ -619,7 +968,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '2.6.0';
+  let version = '3.0.0';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -639,6 +988,7 @@ async function openSettings() {
     refreshModelManager(),
     updateStorageLocation(),
     updateAppVersion(),
+    loadModelPersonalization(),
   ]);
 }
 
@@ -654,6 +1004,8 @@ async function releaseLoadedModel() {
   activeContext = null;
   contextReady = false;
   isGenerating = false;
+  generationAbortRequested = false;
+  updateSendButton();
   setSendEnabled(false);
   setMultimodalSupport(false);
 }
@@ -675,7 +1027,13 @@ async function deleteModel(filename) {
 
   if (deletingActive) {
     modelName = '';
+    modelDisplayName = '';
+    activeSessionId = '';
+    customSystemPrompt = '';
     setModelLabels('');
+    updatePersonalizationControls();
+    renderSidebarSessions();
+    messagesEl.innerHTML = '';
     await clearActiveModelName();
     showEmptyState();
     setEmptyStateMessage('No local model loaded.');
@@ -705,7 +1063,13 @@ async function deleteAllModels() {
   }
 
   modelName = '';
+  modelDisplayName = '';
+  activeSessionId = '';
+  customSystemPrompt = '';
   setModelLabels('');
+  updatePersonalizationControls();
+  renderSidebarSessions();
+  messagesEl.innerHTML = '';
   await clearActiveModelName();
   showEmptyState();
   setEmptyStateMessage('No local model loaded.');
@@ -732,10 +1096,17 @@ async function clearAppData() {
     }
 
     modelName = '';
-    chatHistory = [];
+    modelDisplayName = '';
+    activeSessionId = '';
+    customSystemPrompt = '';
+    sessions = {};
+    pendingLegacyMessages = null;
     messagesEl.innerHTML = '';
     setModelLabels('');
-    await saveChatHistory();
+    updatePersonalizationControls();
+    renderSidebarSessions();
+    await saveSessions();
+    await clearLegacyChatHistory();
     await clearActiveModelName();
     await clearDownloadNotification();
     await refreshModelManager();
@@ -901,7 +1272,7 @@ async function loadModelFile(modelPath, notify, options) {
           model: candidate,
           n_ctx: 2048,
           n_batch: 512,
-          n_threads: N_THREADS,
+          n_threads: navigator.hardwareConcurrency || 4,
           ctx_shift: true,
         });
         activeContext = context;
@@ -938,6 +1309,7 @@ async function downloadAndLoadModel(url, filename) {
   if (await statModelInData(filename)) {
     setSendEnabled(false);
     modelName = filename;
+    modelDisplayName = filename;
     showOverlay('Loading ' + filename + ' (this can take a while)...');
     progressBar.style.display = '';
     progressBar.style.width = '100%';
@@ -946,7 +1318,7 @@ async function downloadAndLoadModel(url, filename) {
       if (!uri) throw new Error('Could not resolve the saved model path');
       await loadModelFile(uri, null, { exact: true });
       await saveActiveModelName(filename);
-      onModelReady();
+      await onModelReady();
       await updateStorageMeter();
     } catch (error) {
       console.error('Model load failed:', error);
@@ -978,10 +1350,11 @@ async function downloadAndLoadModel(url, filename) {
     }
 
     modelName = filename;
+    modelDisplayName = filename;
     showOverlay('Loading ' + filename + ' (this can take a while)...');
     await loadModelFile(result.path, null, { exact: true });
     await saveActiveModelName(filename);
-    onModelReady();
+    await onModelReady();
     await updateStorageMeter();
     showModelReadyNotification(filename);
   } catch (error) {
@@ -1040,6 +1413,7 @@ async function pickAndLoadModel() {
     // source too, which would make the plugin treat the content:// URI as a
     // relative path inside Directory.Data.
     modelName = file.name;
+    modelDisplayName = file.name;
     showOverlay('Importing ' + file.name + ' into private storage...');
     await Filesystem.copy({
       from: file.path,
@@ -1060,7 +1434,7 @@ async function pickAndLoadModel() {
     showOverlay('Loading ' + file.name + ' (this can take a while)...');
     await loadModelFile(rawPath, null, { exact: true });
     await saveActiveModelName(file.name);
-    onModelReady();
+    await onModelReady();
   } catch (error) {
     const message = String((error && error.message) || error || '');
     if ((error && error.fernCancelled) || /cancel/i.test(message)) {
@@ -1116,6 +1490,7 @@ async function loadPersistedModel() {
   }
 
   modelName = targetName;
+  modelDisplayName = targetName;
   setModelLabels(targetName);
   showOverlay('Loading ' + targetName + '...');
 
@@ -1129,13 +1504,17 @@ async function loadPersistedModel() {
     const rawPath = uri.replace(/^file:\/\//, '');
     await loadModelFile(rawPath, null, { exact: true });
     await saveActiveModelName(targetName);
-    onModelReady({ announce: false });
+    await onModelReady({ announce: false });
     return true;
   } catch (error) {
     console.error('Model load failed:', error);
     hideOverlay();
     modelName = '';
+    modelDisplayName = '';
+    activeSessionId = '';
     setModelLabels('');
+    updatePersonalizationControls();
+    renderSidebarSessions();
     setSendEnabled(false);
     showEmptyState();
     if (!error || !error.fernCancelled) reportModelLoadError(error);
@@ -1143,15 +1522,16 @@ async function loadPersistedModel() {
   }
 }
 
-function onModelReady(options) {
+async function onModelReady(options) {
   const announce = !options || options.announce !== false;
   contextReady = true;
   hideOverlay();
-  hideEmptyState();
+  await loadModelPersonalization();
   setModelLabels(modelName);
   setSendEnabled(true);
-  if (announce) {
-    appendMessage('assistant', 'I am running locally on your device. Loaded: ' + modelName + '. No data leaves this machine.');
+  await activateModelSessions();
+  if (announce && activeMessages().length === 0) {
+    appendMessage('assistant', 'I am running locally on your device. Loaded: ' + (modelDisplayName || modelName) + '. No data leaves this machine.');
   }
 }
 
@@ -1161,10 +1541,21 @@ function onModelReady(options) {
 function appendMessage(role, content, options) {
   const persist = !options || options.persist !== false;
   if (persist) {
-    chatHistory.push({ role, content });
-    saveChatHistory();
+    let session = getActiveSession();
+    if (!session && modelName) {
+      session = { id: createSessionId(), title: 'New chat', messages: [] };
+      ensureModelSessions(modelName).unshift(session);
+      activeSessionId = session.id;
+      renderSidebarSessions();
+    }
+    if (session) {
+      session.messages.push({ role, content });
+      if (role === 'user') updateActiveSessionTitle(content);
+      saveSessions();
+    }
   }
 
+  const displayName = modelDisplayName || modelName || 'Local model';
   const div = document.createElement('div');
   div.className = role === 'user'
     ? 'group mb-8 flex flex-col items-end'
@@ -1181,13 +1572,13 @@ function appendMessage(role, content, options) {
   } else {
     div.innerHTML =
       '<div class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-line bg-panel">' +
-        '<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" role="img" aria-label="' + escapeHtml(modelName || 'Local model') + '">' +
+        '<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" role="img" aria-label="' + escapeHtml(displayName) + '">' +
           '<path fill="#ffffff" fill-rule="evenodd" clip-rule="evenodd" d="M7.6 2.2c.6-.2 1.2.2 1.3.8l.5 2.9c.9-.4 1.7-.6 2.6-.6s1.7.2 2.6.6l.5-2.9c.1-.6.7-1 1.3-.8.6.2 1 .8.8 1.4l-.5 3.1c1.5 1.1 2.4 2.8 2.4 4.7 0 2.2-1.2 4.1-3 5.2l-.5 4.2c-.1 1.4-1.3 2.5-2.7 2.5h-2.2c-1.4 0-2.6-1.1-2.7-2.5l-.5-4.2c-1.8-1.1-3-3-3-5.2 0-1.9.9-3.6 2.4-4.7l-.5-3.1c-.2-.6.2-1.2.8-1.4Zm2.3 9.6a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Zm4.2 0a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Z"/>' +
         '</svg>' +
       '</div>' +
       '<div class="min-w-0 flex-1">' +
         '<div class="mb-1.5 flex items-center gap-2">' +
-          '<span class="text-[12px] font-semibold tracking-tight text-white">' + escapeHtml(modelName || 'Local model') + '</span>' +
+          '<span class="text-[12px] font-semibold tracking-tight text-white">' + escapeHtml(displayName) + '</span>' +
         '</div>' +
         '<p class="font-mono text-[13.5px] leading-[1.75] text-white whitespace-pre-wrap"></p>' +
       '</div>';
@@ -1196,6 +1587,7 @@ function appendMessage(role, content, options) {
   }
 
   messagesEl.appendChild(div);
+  hideEmptyState();
   chatContainer.scrollTop = chatContainer.scrollHeight;
   return div;
 }
@@ -1211,7 +1603,8 @@ function lastAssistantBubble() {
 const FERN_SYSTEM_PROMPT = 'You are Fern, a helpful local AI.';
 
 function buildChatMessages(history) {
-  const messages = [{ role: 'system', content: FERN_SYSTEM_PROMPT }];
+  const systemPrompt = (customSystemPrompt && customSystemPrompt.trim()) || FERN_SYSTEM_PROMPT;
+  const messages = [{ role: 'system', content: systemPrompt }];
   (history || []).forEach((msg) => {
     if (!msg || !msg.role) return;
     messages.push({ role: msg.role, content: msg.content || '' });
@@ -1324,7 +1717,7 @@ function showTypingIndicator() {
     '</div>' +
     '<div class="min-w-0 flex-1">' +
       '<div class="mb-1.5 flex items-center gap-2">' +
-        '<span class="text-[12px] font-semibold tracking-tight text-white">' + escapeHtml(modelName || 'Local model') + '</span>' +
+        '<span class="text-[12px] font-semibold tracking-tight text-white">' + escapeHtml(modelDisplayName || modelName || 'Local model') + '</span>' +
       '</div>' +
       '<div class="flex h-6 items-center gap-1.5">' +
         '<span class="typing-dot"></span>' +
@@ -1336,6 +1729,36 @@ function showTypingIndicator() {
   messagesEl.appendChild(div);
   chatContainer.scrollTop = chatContainer.scrollHeight;
   return div;
+}
+
+function persistAssistantMessage(text) {
+  const session = getActiveSession();
+  if (!session) return;
+  session.messages.push({ role: 'assistant', content: text });
+  saveSessions();
+}
+
+async function stopGeneration() {
+  if (!isGenerating) return;
+  generationAbortRequested = true;
+
+  try {
+    if (activeContext && typeof activeContext.stopCompletion === 'function') {
+      await activeContext.stopCompletion();
+      return;
+    }
+    const pro = llamaCppPro();
+    if (pro && typeof pro.stopCompletion === 'function') {
+      await pro.stopCompletion();
+      return;
+    }
+    const native = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins[LlamaCppPluginName];
+    if (native && typeof native.stopCompletion === 'function' && activeContext && activeContext.id != null) {
+      await native.stopCompletion({ contextId: activeContext.id });
+    }
+  } catch (error) {
+    console.warn('[Fern] stopGeneration failed:', error);
+  }
 }
 
 async function generateResponse(userPrompt) {
@@ -1358,15 +1781,37 @@ async function generateResponse(userPrompt) {
     return bubbleText;
   };
 
+  const finalizeStopped = () => {
+    if (typing.parentNode) typing.remove();
+    const partial = bubbleText ? bubbleText.innerText : '';
+    if (partial.trim()) {
+      if (!bubble) revealBubble(partial);
+      bubbleText.innerText = partial;
+      persistAssistantMessage(partial);
+    } else if (bubble && bubble.parentNode) {
+      bubble.remove();
+    }
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+  };
+
   isGenerating = true;
-  setSendEnabled(false);
+  generationAbortRequested = false;
+  updateSendButton();
   await keepScreenAwake();
 
   let streamed = false;
   try {
     await loadSettings();
+    if (generationAbortRequested) {
+      finalizeStopped();
+      return;
+    }
 
-    const prompt = await buildChatPrompt(chatHistory);
+    const prompt = await buildChatPrompt(activeMessages());
+    if (generationAbortRequested) {
+      finalizeStopped();
+      return;
+    }
     const result = await activeContext.completion({
       prompt,
       n_predict: appSettings.maxTokens,
@@ -1381,15 +1826,23 @@ async function generateResponse(userPrompt) {
       }
     });
 
+    if (generationAbortRequested) {
+      finalizeStopped();
+      return;
+    }
+
     const fullText = (result && (result.content || result.text)) || '';
     const finalText = fullText || (streamed ? bubbleText.innerText : '') || '[Empty response]';
     revealBubble(finalText);
     bubbleText.innerText = finalText;
-    chatHistory.push({ role: 'assistant', content: finalText });
-    await saveChatHistory();
+    persistAssistantMessage(finalText);
     notifyBackgroundResponse(finalText);
     chatContainer.scrollTop = chatContainer.scrollHeight;
   } catch (error) {
+    if (generationAbortRequested) {
+      finalizeStopped();
+      return;
+    }
     console.error('Generation error:', error);
     if (isOutOfMemoryError(error)) {
       revealBubble('');
@@ -1399,25 +1852,183 @@ async function generateResponse(userPrompt) {
       const message = '[Error: ' + (error.message || String(error)) + ']';
       revealBubble(message);
       bubbleText.innerText = message;
-      chatHistory.push({ role: 'assistant', content: message });
-      await saveChatHistory();
+      persistAssistantMessage(message);
     }
   } finally {
     await allowScreenSleep();
     isGenerating = false;
-    setSendEnabled(true);
+    generationAbortRequested = false;
+    updateSendButton();
   }
 }
 
 // ============================================================
-// 7. EVENT LISTENERS
+// 7. QUICK SETTINGS, EXPORT & IMPORT
+// ============================================================
+function openQuickSettings() {
+  applySettingsToControls();
+  if (!quickSettingsSheet) return;
+  quickSettingsSheet.style.display = 'flex';
+}
+
+function closeQuickSettings() {
+  if (!quickSettingsSheet) return;
+  quickSettingsSheet.style.display = 'none';
+}
+
+async function exportActiveChat() {
+  const session = getActiveSession();
+  if (!modelName || !session || session.messages.length === 0) {
+    showErrorOverlay('Nothing to export', 'Load a model and start a chat before exporting.');
+    return;
+  }
+
+  try {
+    const { Filesystem, Share } = getPlugins();
+    if (!Filesystem) throw new Error('The Filesystem plugin is not installed.');
+    if (!Share) throw new Error('The Share plugin is not installed.');
+
+    const payload = {
+      app: 'Fern',
+      type: 'fern.chat',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      model: modelName,
+      modelDisplayName: modelDisplayName || modelName,
+      session: {
+        title: session.title || 'New chat',
+        messages: session.messages,
+      },
+    };
+    const json = JSON.stringify(payload, null, 2);
+    const filename = 'fern-chat-' + Date.now() + '.json';
+
+    const written = await Filesystem.writeFile({
+      path: filename,
+      data: json,
+      directory: Directory.Cache,
+      encoding: 'utf8',
+    });
+    if (!written || !written.uri) throw new Error('Could not write the chat export.');
+
+    await Share.share({
+      title: 'Fern Chat Export',
+      url: written.uri,
+      dialogTitle: 'Save or share your chat',
+    });
+  } catch (error) {
+    console.error('Chat export failed:', error);
+    showErrorOverlay('Export failed', error && error.message ? error.message : String(error));
+  }
+}
+
+function base64ToUtf8(base64) {
+  const binary = atob(String(base64 || ''));
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
+function normalizeImportedChat(parsed) {
+  let source = parsed;
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.session) {
+    source = parsed.session;
+  }
+
+  let messages = [];
+  if (Array.isArray(source)) {
+    messages = source;
+  } else if (source && Array.isArray(source.messages)) {
+    messages = source.messages;
+  } else if (parsed && Array.isArray(parsed.messages)) {
+    messages = parsed.messages;
+  }
+
+  const cleanMessages = normalizeMessageList(messages);
+  const title = (source && typeof source.title === 'string' && source.title.trim())
+    || (parsed && typeof parsed.title === 'string' && parsed.title.trim())
+    || 'Imported chat';
+
+  return { title, messages: cleanMessages };
+}
+
+async function importChat() {
+  if (!modelName) {
+    showErrorOverlay('No model loaded', 'Load a model before importing a chat.');
+    return;
+  }
+
+  try {
+    const { FilePicker } = getPlugins();
+    if (!FilePicker) throw new Error('The FilePicker plugin is not installed.');
+
+    const result = await FilePicker.pickFiles({
+      types: ['application/json'],
+      limit: 1,
+      readData: true,
+    });
+    const file = result && result.files && result.files[0];
+    if (!file) return;
+    if (!file.name || !/\.json$/i.test(file.name)) {
+      showErrorOverlay('Invalid file', 'Please select a .json chat export.');
+      return;
+    }
+
+    let raw = file.data;
+    if (!raw && file.path) {
+      const { Filesystem } = getPlugins();
+      const read = await Filesystem.readFile({ path: file.path });
+      raw = typeof read.data === 'string' ? read.data : '';
+    }
+    if (!raw) throw new Error('The selected file could not be read.');
+
+    let text = raw;
+    if (file.data) {
+      try {
+        text = base64ToUtf8(raw);
+      } catch (decodeError) {
+        text = raw;
+      }
+    }
+
+    const parsed = JSON.parse(text);
+    const imported = normalizeImportedChat(parsed);
+    if (!imported.messages.length) {
+      throw new Error('The file does not contain any chat messages.');
+    }
+
+    const session = {
+      id: createSessionId(),
+      title: imported.title.slice(0, 60),
+      messages: imported.messages,
+    };
+    ensureModelSessions(modelName).unshift(session);
+    activeSessionId = session.id;
+    renderSidebarSessions();
+    renderSessionMessages();
+    await saveSessions();
+    closeSettings();
+  } catch (error) {
+    const message = String((error && error.message) || error || '');
+    if (/cancel/i.test(message)) return;
+    console.error('Chat import failed:', error);
+    showErrorOverlay('Import failed', message || 'Could not import that chat.');
+  }
+}
+
+// ============================================================
+// 8. EVENT LISTENERS
 // ============================================================
 sendBtn.addEventListener('click', () => {
+  if (isGenerating) {
+    stopGeneration();
+    return;
+  }
   const text = inputEl.value.trim();
   if (text) generateResponse(text);
 });
 
 inputEl.addEventListener('keydown', (e) => {
+  if (isGenerating) return;
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     const text = inputEl.value.trim();
@@ -1469,6 +2080,51 @@ settingsModal.addEventListener('click', (event) => {
 });
 clearDataBtn.addEventListener('click', clearAppData);
 deleteAllModelsBtn.addEventListener('click', deleteAllModels);
+renameModelBtn.addEventListener('click', renameActiveModel);
+renameModelInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    renameActiveModel();
+  }
+});
+importChatBtn.addEventListener('click', importChat);
+exportChatBtn.addEventListener('click', exportActiveChat);
+
+let systemPromptSaveTimer = null;
+systemPromptInput.addEventListener('input', () => {
+  customSystemPrompt = systemPromptInput.value;
+  if (!modelName) return;
+
+  const targetModel = modelName;
+  const targetKey = SYSTEM_PROMPT_PREFIX + targetModel;
+  const targetValue = systemPromptInput.value;
+  if (systemPromptStatus) systemPromptStatus.innerText = 'Saving...';
+  clearTimeout(systemPromptSaveTimer);
+  systemPromptSaveTimer = setTimeout(async () => {
+    try {
+      const Preferences = getPreferencesPlugin();
+      if (Preferences) {
+        await Preferences.set({ key: targetKey, value: targetValue });
+      }
+      if (systemPromptStatus && modelName === targetModel) {
+        systemPromptStatus.innerText = 'Saved for ' + (modelDisplayName || targetModel) + '.';
+      }
+    } catch (error) {
+      console.warn('Could not save system prompt:', error);
+      if (systemPromptStatus) systemPromptStatus.innerText = 'Could not save.';
+    }
+  }, 350);
+});
+
+// QUICK SETTINGS BOTTOM SHEET
+quickSettingsBtn.addEventListener('click', openQuickSettings);
+closeQuickSettingsBtn.addEventListener('click', closeQuickSettings);
+quickSettingsBackdrop.addEventListener('click', closeQuickSettings);
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && quickSettingsSheet.style.display === 'flex') {
+    closeQuickSettings();
+  }
+});
 
 temperatureSlider.addEventListener('input', () => {
   appSettings.temperature = clampNumber(temperatureSlider.value, 0, 1, DEFAULT_SETTINGS.temperature);
@@ -1488,6 +2144,17 @@ modelList.addEventListener('click', (event) => {
   deleteModel(button.getAttribute('data-delete-model'));
 });
 
+// SESSION LIST
+chatNav.addEventListener('click', (event) => {
+  const deleteButton = event.target.closest('[data-delete-session-id]');
+  if (deleteButton) {
+    deleteSession(deleteButton.getAttribute('data-delete-session-id'));
+    return;
+  }
+  const sessionButton = event.target.closest('[data-session-id]');
+  if (sessionButton) selectSession(sessionButton.getAttribute('data-session-id'));
+});
+
 // ERROR OVERLAY
 errorDismissBtn.addEventListener('click', closeErrorOverlay);
 
@@ -1497,10 +2164,12 @@ ramWarningCancelBtn.addEventListener('click', () => resolveRamWarning(false));
 
 // NEW CHAT
 newChatBtn.addEventListener('click', () => {
-  chatHistory = [];
-  messagesEl.innerHTML = '';
-  saveChatHistory();
-  showEmptyState();
+  if (!modelName) {
+    showErrorOverlay('No model loaded', 'Load a model before starting a new chat.');
+    return;
+  }
+  createSession({ title: 'New chat' });
+  inputEl.focus();
 });
 
 // ============================================================
@@ -1518,8 +2187,10 @@ async function initApp() {
     // 1. Restore generation settings.
     await loadSettings();
 
-    // 2. Restore the conversation and re-render every message.
-    await loadChatHistory();
+    // 2. Restore scoped sessions for every model.
+    await loadSessions();
+    renderSidebarSessions();
+    updatePersonalizationControls();
 
     // 3. Restore the last model (or scan Directory.Data) and load it.
     await loadPersistedModel();

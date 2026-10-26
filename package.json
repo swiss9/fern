@@ -1,6 +1,6 @@
 {
   "name": "fern",
-  "version": "3.0.3",
+  "version": "3.0.4",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -16,6 +16,7 @@
     "@capacitor/cli": "^8.5.3",
     "@capacitor/core": "^8.5.3",
     "@capacitor/device": "^8.0.3",
+    "@capacitor/file-transfer": "^2.0.6",
     "@capacitor/filesystem": "^8.1.5",
     "@capacitor/local-notifications": "^8.3.1",
     "@capacitor/preferences": "^8.0.1",

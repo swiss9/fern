@@ -111,6 +111,7 @@ const getPlugins = () => {
   return {
     FilePicker: window.Capacitor.Plugins.FilePicker,
     Filesystem: window.Capacitor.Plugins.Filesystem,
+    FileTransfer: window.Capacitor.Plugins.FileTransfer,
     LocalNotifications: window.Capacitor.Plugins.LocalNotifications,
     Device: window.Capacitor.Plugins.Device,
     Preferences: window.Capacitor.Plugins.Preferences,
@@ -1193,7 +1194,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '3.0.3';
+  let version = '3.0.4';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -1573,21 +1574,57 @@ async function downloadAndLoadModel(url, filename) {
     return;
   }
 
+  const { FileTransfer } = getPlugins();
+  if (!FileTransfer) {
+    showErrorOverlay('FileTransfer unavailable', 'The FileTransfer plugin is not installed.');
+    return;
+  }
+
   showOverlay('Downloading ' + filename + '... Please wait.');
-  progressBar.style.display = 'none';
+  progressBar.style.display = '';
+  progressBar.style.width = '0%';
   setSendEnabled(false);
   showDownloadingNotification(filename);
+
+  let progressListener = null;
 
   try {
     try {
       await Filesystem.deleteFile({ path: filename, directory: Directory.Data });
     } catch (error) {}
 
-    const result = await Filesystem.downloadFile({
-      url,
-      path: filename,
-      directory: Directory.Data,
+    const { uri } = await Filesystem.getUri({ path: filename, directory: Directory.Data });
+    if (!uri) {
+      throw new Error('Could not resolve the download destination path');
+    }
+
+    progressListener = await FileTransfer.addListener('progress', (progress) => {
+      if (!progress || progress.type === 'upload') return;
+      if (progress.url && url && progress.url !== url) return;
+      if (!progress.lengthComputable || !progress.contentLength) {
+        progressText.innerText = 'Downloading...';
+        return;
+      }
+      const percent = Math.max(0, Math.min(100, Math.round((progress.bytes / progress.contentLength) * 100)));
+      progressText.innerText = 'Downloading: ' + percent + '%';
+      progressBar.style.width = percent + '%';
     });
+
+    const result = await FileTransfer.downloadFile({
+      url,
+      path: uri,
+      progress: true,
+    });
+
+    if (progressListener) {
+      try {
+        await progressListener.remove();
+      } catch (removeError) {}
+      progressListener = null;
+    }
+    progressBar.style.width = '100%';
+    progressBar.style.display = 'none';
+
     if (!result || !result.path) {
       throw new Error('Download did not return a saved file path');
     }
@@ -1618,6 +1655,14 @@ async function downloadAndLoadModel(url, filename) {
         showErrorOverlay('Download failed', error && error.message ? error.message : String(error));
       }
     }
+  } finally {
+    if (progressListener) {
+      try {
+        await progressListener.remove();
+      } catch (removeError) {}
+      progressListener = null;
+    }
+    progressBar.style.display = 'none';
   }
 }
 

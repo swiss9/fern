@@ -40,6 +40,8 @@ function createNativeLlamaBridge() {
         const nativeParams = {
           n_predict: params.n_predict,
           temperature: params.temperature,
+          top_k: params.top_k,
+          penalty_repeat: params.penalty_repeat,
           emit_partial_completion: !!callback,
         };
         if (params.prompt) {
@@ -154,6 +156,8 @@ const temperatureSlider = document.getElementById('temperature-slider');
 const temperatureValue = document.getElementById('temperature-value');
 const maxTokensSlider = document.getElementById('max-tokens-slider');
 const maxTokensValue = document.getElementById('max-tokens-value');
+const repeatPenaltySlider = document.getElementById('repeat-penalty-slider');
+const repeatPenaltyValue = document.getElementById('repeat-penalty-value');
 const modelList = document.getElementById('model-list');
 const modelListEmpty = document.getElementById('model-list-empty');
 const deleteAllModelsBtn = document.getElementById('delete-all-models-btn');
@@ -197,7 +201,7 @@ const LEGACY_CHAT_HISTORY_KEY = 'chatHistory';
 const ACTIVE_MODEL_KEY = 'activeModelName';
 const SYSTEM_PROMPT_PREFIX = 'systemPrompt_';
 const MODEL_ALIASES_KEY = 'fern.modelAliases';
-const DEFAULT_SETTINGS = { temperature: 0.6, maxTokens: 512 };
+const DEFAULT_SETTINGS = { temperature: 0.6, maxTokens: 512, repeatPenalty: 1.15 };
 let appSettings = { ...DEFAULT_SETTINGS };
 let contextReady = false;
 let isGenerating = false;
@@ -1093,6 +1097,8 @@ function applySettingsToControls() {
   if (temperatureValue) temperatureValue.innerText = appSettings.temperature.toFixed(1);
   if (maxTokensSlider) maxTokensSlider.value = String(appSettings.maxTokens);
   if (maxTokensValue) maxTokensValue.innerText = String(appSettings.maxTokens);
+  if (repeatPenaltySlider) repeatPenaltySlider.value = String(appSettings.repeatPenalty);
+  if (repeatPenaltyValue) repeatPenaltyValue.innerText = appSettings.repeatPenalty.toFixed(2);
 }
 
 async function loadSettings() {
@@ -1104,6 +1110,7 @@ async function loadSettings() {
         const parsed = JSON.parse(value);
         appSettings.temperature = clampNumber(parsed.temperature, 0, 1, DEFAULT_SETTINGS.temperature);
         appSettings.maxTokens = Math.round(clampNumber(parsed.maxTokens, 128, 2048, DEFAULT_SETTINGS.maxTokens));
+        appSettings.repeatPenalty = clampNumber(parsed.repeatPenalty, 1, 2, DEFAULT_SETTINGS.repeatPenalty);
       }
     }
   } catch (error) {
@@ -1123,7 +1130,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '3.0.2';
+  let version = '3.0.3';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -1999,6 +2006,8 @@ async function generateResponse(userPrompt) {
       prompt,
       n_predict: appSettings.maxTokens,
       temperature: appSettings.temperature,
+      top_k: 40,
+      penalty_repeat: appSettings.repeatPenalty,
     }, (data) => {
       const tok = (data && (data.token || data.content)) || '';
       if (tok) {
@@ -2335,6 +2344,12 @@ temperatureSlider.addEventListener('input', () => {
 maxTokensSlider.addEventListener('input', () => {
   appSettings.maxTokens = Math.round(clampNumber(maxTokensSlider.value, 128, 2048, DEFAULT_SETTINGS.maxTokens));
   maxTokensValue.innerText = String(appSettings.maxTokens);
+  saveSettings();
+});
+
+repeatPenaltySlider.addEventListener('input', () => {
+  appSettings.repeatPenalty = clampNumber(repeatPenaltySlider.value, 1, 2, DEFAULT_SETTINGS.repeatPenalty);
+  repeatPenaltyValue.innerText = appSettings.repeatPenalty.toFixed(2);
   saveSettings();
 });
 

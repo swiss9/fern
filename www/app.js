@@ -1196,7 +1196,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '3.0.7';
+  let version = '3.0.9';
   try {
     const { Device } = getPlugins();
     if (Device) {

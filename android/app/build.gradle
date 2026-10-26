@@ -7,8 +7,8 @@ android {
         applicationId "com.fern.localai"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 34
-        versionName "3.0.7"
+        versionCode 36
+        versionName "3.0.9"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,10 +16,22 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            storeFile file("fern-keystore.jks")
+            storePassword System.getenv("KEYSTORE_PASSWORD") ?: "F3rn_\$3cur3_K3yst0r3_2026!x"
+            keyAlias System.getenv("KEY_ALIAS") ?: "fern-key-secure"
+            keyPassword System.getenv("KEY_PASSWORD") ?: "F3rn_\$3cur3_K3yst0r3_2026!x"
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.release
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
         }
     }
 }

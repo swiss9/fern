@@ -134,6 +134,7 @@ const sendBtn = document.getElementById('send-btn');
 const overlay = document.getElementById('loading-overlay');
 const progressText = document.getElementById('progress-text');
 const progressBar = document.getElementById('progress-bar');
+const cancelDownloadBtn = document.getElementById('cancel-download-btn');
 const emptyState = document.getElementById('empty-state');
 const emptyStateText = document.getElementById('empty-state-text');
 const mainLoadBtn = document.getElementById('main-load-btn');
@@ -204,6 +205,7 @@ const ACTIVE_MODEL_KEY = 'activeModelName';
 const SYSTEM_PROMPT_PREFIX = 'systemPrompt_';
 const MODEL_ALIASES_KEY = 'fern.modelAliases';
 const DEFAULT_SETTINGS = { temperature: 0.6, maxTokens: 512, repeatPenalty: 1.15 };
+let activeDownloadCancel = null;
 
 const MODEL_CATALOG = [
   {
@@ -1194,7 +1196,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '3.0.4';
+  let version = '3.0.6';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -1585,13 +1587,50 @@ async function downloadAndLoadModel(url, filename) {
   progressBar.style.width = '0%';
   setSendEnabled(false);
   showDownloadingNotification(filename);
+  if (cancelDownloadBtn) cancelDownloadBtn.classList.remove('hidden');
 
   let progressListener = null;
+  let cancelRequested = false;
 
-  try {
+  const deletePartialDownload = async () => {
     try {
       await Filesystem.deleteFile({ path: filename, directory: Directory.Data });
-    } catch (error) {}
+    } catch (cleanupError) {}
+  };
+
+  const cancelDownload = async () => {
+    if (cancelRequested) return;
+    cancelRequested = true;
+
+    try {
+      if (typeof FileTransfer.abort === 'function') {
+        await FileTransfer.abort();
+      } else if (typeof FileTransfer.cancel === 'function') {
+        await FileTransfer.cancel();
+      } else if (typeof FileTransfer.removeAllListeners === 'function') {
+        await FileTransfer.removeAllListeners();
+      }
+    } catch (cancelError) {}
+
+    if (progressListener) {
+      try {
+        await progressListener.remove();
+      } catch (removeError) {}
+      progressListener = null;
+    }
+
+    if (cancelDownloadBtn) cancelDownloadBtn.classList.add('hidden');
+    hideOverlay();
+    await deletePartialDownload();
+    await clearDownloadNotification();
+    setSendEnabled(contextReady);
+    showErrorOverlay('Download cancelled', 'Download cancelled.');
+  };
+
+  activeDownloadCancel = cancelDownload;
+
+  try {
+    await deletePartialDownload();
 
     const { uri } = await Filesystem.getUri({ path: filename, directory: Directory.Data });
     if (!uri) {
@@ -1599,15 +1638,21 @@ async function downloadAndLoadModel(url, filename) {
     }
 
     progressListener = await FileTransfer.addListener('progress', (progress) => {
+      if (cancelRequested) return;
       if (!progress || progress.type === 'upload') return;
       if (progress.url && url && progress.url !== url) return;
-      if (!progress.lengthComputable || !progress.contentLength) {
-        progressText.innerText = 'Downloading...';
+
+      const loaded = Number(progress.bytes) || 0;
+      const total = Number(progress.contentLength) || 0;
+
+      if (!progress.lengthComputable || total <= 0) {
+        progressText.innerText = 'Downloading: ' + formatBytes(loaded);
         return;
       }
-      const percent = Math.max(0, Math.min(100, Math.round((progress.bytes / progress.contentLength) * 100)));
-      progressText.innerText = 'Downloading: ' + percent + '%';
-      progressBar.style.width = percent + '%';
+
+      const percentage = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
+      progressText.innerText = 'Downloading: ' + percentage + '% (' + formatBytes(loaded) + ' / ' + formatBytes(total) + ')';
+      progressBar.style.width = percentage + '%';
     });
 
     const result = await FileTransfer.downloadFile({
@@ -1615,6 +1660,11 @@ async function downloadAndLoadModel(url, filename) {
       path: uri,
       progress: true,
     });
+
+    if (cancelRequested) {
+      await deletePartialDownload();
+      return;
+    }
 
     if (progressListener) {
       try {
@@ -1638,12 +1688,11 @@ async function downloadAndLoadModel(url, filename) {
     await updateStorageMeter();
     showModelReadyNotification(filename);
   } catch (error) {
+    if (cancelRequested) return;
     console.error('Model download failed:', error);
     const cancelled = !!(error && error.fernCancelled);
     if (!cancelled) {
-      try {
-        await Filesystem.deleteFile({ path: filename, directory: Directory.Data });
-      } catch (cleanupError) {}
+      await deletePartialDownload();
     }
     await clearDownloadNotification();
     hideOverlay();
@@ -1662,7 +1711,9 @@ async function downloadAndLoadModel(url, filename) {
       } catch (removeError) {}
       progressListener = null;
     }
+    if (cancelDownloadBtn) cancelDownloadBtn.classList.add('hidden');
     progressBar.style.display = 'none';
+    if (activeDownloadCancel === cancelDownload) activeDownloadCancel = null;
   }
 }
 
@@ -2488,6 +2539,13 @@ aliasModalInput.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Escape') closeAliasModal();
 });
+
+// CANCEL DOWNLOAD
+if (cancelDownloadBtn) {
+  cancelDownloadBtn.addEventListener('click', () => {
+    if (activeDownloadCancel) activeDownloadCancel();
+  });
+}
 
 // CUSTOM CONFIRM MODAL
 confirmModalCancel.addEventListener('click', () => resolveConfirm(false));

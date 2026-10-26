@@ -161,6 +161,7 @@ const settingsStorageTotal = document.getElementById('settings-storage-total');
 const appVersionEl = document.getElementById('app-version');
 const sidebarVersionEl = document.getElementById('sidebar-version');
 const chatNav = document.getElementById('chat-nav');
+const chatSearchInput = document.getElementById('chat-search-input');
 const exportChatBtn = document.getElementById('export-chat-btn');
 const importChatBtn = document.getElementById('import-chat-btn');
 const quickSettingsBtn = document.getElementById('quick-settings-btn');
@@ -203,6 +204,7 @@ let isGenerating = false;
 let generationAbortRequested = false;
 let sessions = {};
 let activeSessionId = '';
+let chatSearchQuery = '';
 let modelName = '';
 let modelDisplayName = '';
 let modelAliases = {};
@@ -612,7 +614,7 @@ function updateActiveSessionTitle(text) {
   if (!session) return;
   const title = String(text || '').replace(/\s+/g, ' ').trim();
   if (!title || (session.title && session.title !== 'New chat')) return;
-  session.title = title.slice(0, 48) || 'New chat';
+  session.title = title.slice(0, 25) || 'New chat';
   renderSidebarSessions();
 }
 
@@ -699,9 +701,20 @@ function renderSidebarSessions() {
     return;
   }
 
-  const list = Array.isArray(sessions[sessionKeyForModel(modelName)]) ? sessions[sessionKeyForModel(modelName)] : [];
-  if (list.length === 0) {
+  const key = sessionKeyForModel(modelName);
+  const allSessions = Array.isArray(sessions[key]) ? sessions[key] : [];
+  if (allSessions.length === 0) {
     chatNav.innerHTML = '<p class="px-2 py-2 font-mono text-[10.5px] leading-relaxed text-zinc-600">No chats for this model yet.</p>';
+    return;
+  }
+
+  const query = chatSearchQuery.trim().toLowerCase();
+  const list = query
+    ? allSessions.filter((session) => String(session.title || 'New chat').toLowerCase().includes(query))
+    : allSessions;
+
+  if (list.length === 0) {
+    chatNav.innerHTML = '<p class="px-2 py-2 font-mono text-[10.5px] leading-relaxed text-zinc-600">No chats match &quot;' + escapeHtml(chatSearchQuery.trim()) + '&quot;.</p>';
     return;
   }
 
@@ -810,14 +823,17 @@ async function activateModelSessions() {
   saveSessions();
 }
 
-function getSystemPromptKey() {
-  return SYSTEM_PROMPT_PREFIX + modelName;
+function getSystemPromptKey(name) {
+  const key = name || modelName;
+  if (!key) return '';
+  return SYSTEM_PROMPT_PREFIX + key;
 }
 
 async function loadModelPersonalization() {
+  const targetModel = modelName;
   customSystemPrompt = '';
   syncModelDisplayName();
-  if (!modelName) {
+  if (!targetModel) {
     updatePersonalizationControls();
     return;
   }
@@ -825,13 +841,15 @@ async function loadModelPersonalization() {
   try {
     const Preferences = getPreferencesPlugin();
     if (Preferences) {
-      const prompt = await Preferences.get({ key: getSystemPromptKey() });
+      const prompt = await Preferences.get({ key: getSystemPromptKey(targetModel) });
+      if (modelName !== targetModel) return;
       customSystemPrompt = prompt.value || '';
     }
   } catch (error) {
     console.warn('Could not load model personalization:', error);
   }
 
+  if (modelName !== targetModel) return;
   updatePersonalizationControls();
 }
 
@@ -1105,7 +1123,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '3.0.1';
+  let version = '3.0.2';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -2079,11 +2097,19 @@ async function exportActiveChat() {
     });
     if (!written || !written.uri) throw new Error('Could not write the chat export.');
 
-    await Share.share({
-      title: 'Fern Chat Export',
-      url: written.uri,
-      dialogTitle: 'Save or share your chat',
-    });
+    try {
+      await Share.share({
+        title: 'Fern Chat Export',
+        url: written.uri,
+        dialogTitle: 'Save or share your chat',
+      });
+    } catch (shareError) {
+      const shareMessage = String(
+        (shareError && (shareError.message || shareError.errorMessage || shareError.code)) || shareError || ''
+      );
+      if (/cancel/i.test(shareMessage)) return;
+      throw shareError;
+    }
   } catch (error) {
     console.error('Chat export failed:', error);
     showErrorOverlay('Export failed', error && error.message ? error.message : String(error));
@@ -2257,7 +2283,7 @@ systemPromptInput.addEventListener('input', () => {
   if (!modelName) return;
 
   const targetModel = modelName;
-  const targetKey = SYSTEM_PROMPT_PREFIX + targetModel;
+  const targetKey = getSystemPromptKey(targetModel);
   const targetValue = systemPromptInput.value;
   if (systemPromptStatus) systemPromptStatus.innerText = 'Saving...';
   clearTimeout(systemPromptSaveTimer);
@@ -2352,6 +2378,13 @@ messagesEl.addEventListener('click', (event) => {
 });
 
 // SESSION LIST
+if (chatSearchInput) {
+  chatSearchInput.addEventListener('input', () => {
+    chatSearchQuery = chatSearchInput.value;
+    renderSidebarSessions();
+  });
+}
+
 chatNav.addEventListener('click', (event) => {
   const deleteButton = event.target.closest('[data-delete-session-id]');
   if (deleteButton) {

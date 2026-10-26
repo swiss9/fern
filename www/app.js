@@ -169,9 +169,18 @@ const quickSettingsBackdrop = document.getElementById('quick-settings-backdrop')
 const closeQuickSettingsBtn = document.getElementById('close-quick-settings-btn');
 const systemPromptInput = document.getElementById('system-prompt-input');
 const systemPromptStatus = document.getElementById('system-prompt-status');
-const renameModelInput = document.getElementById('rename-model-input');
-const renameModelBtn = document.getElementById('rename-model-btn');
-const renameModelStatus = document.getElementById('rename-model-status');
+const advancedSettingsToggle = document.getElementById('advanced-settings-toggle');
+const advancedSettingsPanel = document.getElementById('advanced-settings-panel');
+const aliasModal = document.getElementById('alias-modal');
+const aliasModalInput = document.getElementById('alias-modal-input');
+const aliasModalFilename = document.getElementById('alias-modal-filename');
+const aliasModalCancel = document.getElementById('alias-modal-cancel');
+const aliasModalSave = document.getElementById('alias-modal-save');
+const confirmModal = document.getElementById('confirm-modal');
+const confirmModalTitle = document.getElementById('confirm-modal-title');
+const confirmModalDescription = document.getElementById('confirm-modal-description');
+const confirmModalCancel = document.getElementById('confirm-modal-cancel');
+const confirmModalConfirm = document.getElementById('confirm-modal-confirm');
 const SEND_ICON_HTML = sendBtn.innerHTML;
 const STOP_ICON_HTML =
   '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>';
@@ -186,8 +195,8 @@ const SESSIONS_KEY = 'fern.sessions';
 const LEGACY_CHAT_HISTORY_KEY = 'chatHistory';
 const ACTIVE_MODEL_KEY = 'activeModelName';
 const SYSTEM_PROMPT_PREFIX = 'systemPrompt_';
-const MODEL_DISPLAY_NAME_PREFIX = 'modelDisplayName_';
-const DEFAULT_SETTINGS = { temperature: 0.7, maxTokens: 512 };
+const MODEL_ALIASES_KEY = 'fern.modelAliases';
+const DEFAULT_SETTINGS = { temperature: 0.6, maxTokens: 512 };
 let appSettings = { ...DEFAULT_SETTINGS };
 let contextReady = false;
 let isGenerating = false;
@@ -196,10 +205,13 @@ let sessions = {};
 let activeSessionId = '';
 let modelName = '';
 let modelDisplayName = '';
+let modelAliases = {};
 let customSystemPrompt = '';
 let pendingLegacyMessages = null;
 let activeContext = null;
 let chatSaveChain = Promise.resolve();
+let aliasTargetModel = '';
+let confirmResolve = null;
 
 function hideSplash() {
   if (!splashOverlay) return;
@@ -357,7 +369,8 @@ function hideEmptyState() {
 }
 
 function setModelLabels(name) {
-  const display = name ? (modelDisplayName || name) : '';
+  const display = name ? getModelAlias(name) : '';
+  if (name) modelDisplayName = display;
   document.getElementById('sidebar-model-label').innerText = display || 'No model';
   document.getElementById('active-model-chip').innerText = display ? display.toUpperCase() : 'NO MODEL';
   setMultimodalSupport(!!name && isMultimodal(name));
@@ -376,6 +389,141 @@ function getPreferencesPlugin() {
   } catch (error) {
     return null;
   }
+}
+
+function getModelAlias(name) {
+  const key = name || modelName;
+  if (!key) return '';
+  const alias = modelAliases[key];
+  return typeof alias === 'string' && alias.trim() ? alias.trim() : key;
+}
+
+function syncModelDisplayName() {
+  modelDisplayName = getModelAlias(modelName);
+}
+
+function sessionKeyForModel(name) {
+  const key = name || modelName;
+  if (!key) return '';
+  return getModelAlias(key);
+}
+
+async function loadModelAliases() {
+  try {
+    const Preferences = getPreferencesPlugin();
+    if (!Preferences) return;
+    const { value } = await Preferences.get({ key: MODEL_ALIASES_KEY });
+    if (!value) return;
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+    const clean = {};
+    Object.keys(parsed).forEach((key) => {
+      const alias = parsed[key];
+      if (typeof alias === 'string' && alias.trim()) clean[key] = alias.trim();
+    });
+    modelAliases = clean;
+  } catch (error) {
+    console.warn('Could not load model aliases:', error);
+  }
+}
+
+async function saveModelAliases() {
+  try {
+    const Preferences = getPreferencesPlugin();
+    if (!Preferences) return;
+    await Preferences.set({ key: MODEL_ALIASES_KEY, value: JSON.stringify(modelAliases) });
+  } catch (error) {
+    console.warn('Could not save model aliases:', error);
+  }
+}
+
+function showConfirm(options) {
+  const opts = typeof options === 'string' ? { description: options } : (options || {});
+  if (!confirmModal) return Promise.resolve(false);
+
+  confirmModalTitle.innerText = opts.title || 'Confirm';
+  confirmModalDescription.innerText = opts.description || '';
+  confirmModalCancel.innerText = opts.cancelText || 'Cancel';
+  confirmModalConfirm.innerText = opts.confirmText || 'Confirm';
+
+  const danger = opts.danger !== false;
+  confirmModalConfirm.className = danger
+    ? 'flex h-9 flex-1 items-center justify-center rounded-md border border-red-500/40 bg-red-500/15 text-[12.5px] font-medium text-red-200 transition hover:bg-red-500/25'
+    : 'flex h-9 flex-1 items-center justify-center rounded-md border border-line bg-white text-[12.5px] font-medium text-base transition hover:bg-zinc-200';
+
+  confirmModal.classList.remove('hidden');
+  confirmModal.style.display = 'flex';
+
+  return new Promise((resolve) => {
+    confirmResolve = resolve;
+  });
+}
+
+function resolveConfirm(value) {
+  if (!confirmModal) return;
+  confirmModal.classList.add('hidden');
+  confirmModal.style.display = 'none';
+  const resolve = confirmResolve;
+  confirmResolve = null;
+  if (resolve) resolve(!!value);
+}
+
+function openAliasModal(filename) {
+  if (!aliasModal || !filename) return;
+  aliasTargetModel = filename;
+  if (aliasModalFilename) aliasModalFilename.innerText = filename;
+  if (aliasModalInput) {
+    aliasModalInput.value = modelAliases[filename] || '';
+    aliasModalInput.placeholder = filename;
+  }
+  aliasModal.classList.remove('hidden');
+  aliasModal.style.display = 'flex';
+  setTimeout(() => {
+    if (!aliasModalInput) return;
+    aliasModalInput.focus();
+    aliasModalInput.select();
+  }, 50);
+}
+
+function closeAliasModal() {
+  if (!aliasModal) return;
+  aliasModal.classList.add('hidden');
+  aliasModal.style.display = 'none';
+  aliasTargetModel = '';
+}
+
+async function saveAliasFromModal() {
+  if (!aliasTargetModel) return;
+  const filename = aliasTargetModel;
+  const value = aliasModalInput ? aliasModalInput.value.trim() : '';
+  const oldKey = sessionKeyForModel(filename);
+
+  if (value && value !== filename) modelAliases[filename] = value;
+  else delete modelAliases[filename];
+
+  const newKey = sessionKeyForModel(filename);
+  if (oldKey && newKey && oldKey !== newKey) {
+    const oldSessions = Array.isArray(sessions[oldKey]) ? sessions[oldKey] : [];
+    const existing = Array.isArray(sessions[newKey]) ? sessions[newKey] : [];
+    if (oldSessions.length) {
+      sessions[newKey] = oldSessions.concat(existing);
+    }
+    delete sessions[oldKey];
+  }
+
+  await saveModelAliases();
+
+  if (filename === modelName) {
+    syncModelDisplayName();
+    setModelLabels(modelName);
+    updatePersonalizationControls();
+    renderSidebarSessions();
+    renderSessionMessages();
+    await saveSessions();
+  }
+
+  closeAliasModal();
+  await refreshModelManager();
 }
 
 function normalizeMessageList(list) {
@@ -417,14 +565,16 @@ function createSessionId() {
 }
 
 function ensureModelSessions(name) {
-  if (!name) return [];
-  if (!Array.isArray(sessions[name])) sessions[name] = [];
-  return sessions[name];
+  const key = sessionKeyForModel(name);
+  if (!key) return [];
+  if (!Array.isArray(sessions[key])) sessions[key] = [];
+  return sessions[key];
 }
 
 function getActiveSession() {
   if (!modelName) return null;
-  const list = Array.isArray(sessions[modelName]) ? sessions[modelName] : [];
+  const key = sessionKeyForModel(modelName);
+  const list = Array.isArray(sessions[key]) ? sessions[key] : [];
   return list.find((session) => session.id === activeSessionId) || null;
 }
 
@@ -481,7 +631,13 @@ async function deleteSession(id) {
   const list = ensureModelSessions(modelName);
   const index = list.findIndex((session) => session.id === id);
   if (index < 0) return;
-  if (!confirm('Delete this chat?')) return;
+  const confirmed = await showConfirm({
+    title: 'Delete chat',
+    description: 'Delete this chat? This cannot be undone.',
+    confirmText: 'Delete',
+    danger: true,
+  });
+  if (!confirmed) return;
 
   list.splice(index, 1);
 
@@ -512,10 +668,27 @@ function renderSessionMessages() {
     return;
   }
   hideEmptyState();
-  messages.forEach((message) => {
-    appendMessage(message.role, message.content, { persist: false });
+  messages.forEach((message, index) => {
+    appendMessage(message.role, message.content, { persist: false, index });
   });
   chatContainer.scrollTop = chatContainer.scrollHeight;
+}
+
+function editUserMessage(index) {
+  if (isGenerating) return;
+  const session = getActiveSession();
+  if (!session || !Array.isArray(session.messages)) return;
+  if (!Number.isInteger(index) || index < 0 || index >= session.messages.length) return;
+
+  const message = session.messages[index];
+  if (!message || message.role !== 'user') return;
+
+  inputEl.value = message.content || '';
+  session.messages = session.messages.slice(0, index);
+  renderSessionMessages();
+  saveSessions();
+  inputEl.dispatchEvent(new Event('input'));
+  inputEl.focus();
 }
 
 function renderSidebarSessions() {
@@ -526,7 +699,7 @@ function renderSidebarSessions() {
     return;
   }
 
-  const list = Array.isArray(sessions[modelName]) ? sessions[modelName] : [];
+  const list = Array.isArray(sessions[sessionKeyForModel(modelName)]) ? sessions[sessionKeyForModel(modelName)] : [];
   if (list.length === 0) {
     chatNav.innerHTML = '<p class="px-2 py-2 font-mono text-[10.5px] leading-relaxed text-zinc-600">No chats for this model yet.</p>';
     return;
@@ -641,13 +814,9 @@ function getSystemPromptKey() {
   return SYSTEM_PROMPT_PREFIX + modelName;
 }
 
-function getModelDisplayNameKey() {
-  return MODEL_DISPLAY_NAME_PREFIX + modelName;
-}
-
 async function loadModelPersonalization() {
   customSystemPrompt = '';
-  modelDisplayName = modelName;
+  syncModelDisplayName();
   if (!modelName) {
     updatePersonalizationControls();
     return;
@@ -656,10 +825,6 @@ async function loadModelPersonalization() {
   try {
     const Preferences = getPreferencesPlugin();
     if (Preferences) {
-      const displayName = await Preferences.get({ key: getModelDisplayNameKey() });
-      if (displayName.value && displayName.value.trim()) {
-        modelDisplayName = displayName.value.trim();
-      }
       const prompt = await Preferences.get({ key: getSystemPromptKey() });
       customSystemPrompt = prompt.value || '';
     }
@@ -679,42 +844,6 @@ function updatePersonalizationControls() {
     systemPromptStatus.innerText = modelName
       ? 'Saved for ' + (modelDisplayName || modelName) + '.'
       : 'Load a model to customize its personality.';
-  }
-  if (renameModelInput) {
-    renameModelInput.value = modelDisplayName && modelDisplayName !== modelName ? modelDisplayName : '';
-    renameModelInput.disabled = !modelName;
-    renameModelInput.placeholder = modelName ? modelName : 'Display name';
-  }
-  if (renameModelBtn) renameModelBtn.disabled = !modelName;
-  if (renameModelStatus) {
-    renameModelStatus.innerText = modelName
-      ? 'File: ' + modelName
-      : 'No active model.';
-  }
-}
-
-async function renameActiveModel() {
-  if (!modelName || !renameModelInput) return;
-  const value = renameModelInput.value.trim();
-  if (!value) return;
-
-  try {
-    const Preferences = getPreferencesPlugin();
-    if (!Preferences) return;
-    if (value === modelName) {
-      await Preferences.remove({ key: getModelDisplayNameKey() });
-      modelDisplayName = modelName;
-    } else {
-      await Preferences.set({ key: getModelDisplayNameKey(), value });
-      modelDisplayName = value;
-    }
-    setModelLabels(modelName);
-    updatePersonalizationControls();
-    renderSessionMessages();
-    if (systemPromptStatus) systemPromptStatus.innerText = 'Saved for ' + modelDisplayName + '.';
-  } catch (error) {
-    console.warn('Could not rename model:', error);
-    showErrorOverlay('Rename failed', error && error.message ? error.message : String(error));
   }
 }
 
@@ -881,15 +1010,23 @@ function renderModelList(models) {
     return;
   }
 
-  modelList.innerHTML = models.map((model) => (
-    '<div class="flex items-center gap-3 rounded-md border border-line bg-base px-3 py-2.5">' +
+  modelList.innerHTML = models.map((model) => {
+    const alias = modelAliases[model.name];
+    const displayName = alias && alias.trim() ? alias.trim() : model.name;
+    const meta = alias && alias.trim()
+      ? escapeHtml(model.name) + ' · ' + formatBytes(model.size)
+      : formatBytes(model.size);
+    return '<div class="flex items-center gap-2 rounded-md border border-line bg-base px-3 py-2.5">' +
       '<div class="min-w-0 flex-1">' +
-        '<p class="truncate font-mono text-[11.5px] text-zinc-200">' + escapeHtml(model.name) + '</p>' +
-        '<p class="mt-0.5 font-mono text-[10px] text-zinc-600">' + formatBytes(model.size) + '</p>' +
+        '<p class="truncate font-mono text-[11.5px] text-zinc-200">' + escapeHtml(displayName) + '</p>' +
+        '<p class="mt-0.5 truncate font-mono text-[10px] text-zinc-600">' + meta + '</p>' +
       '</div>' +
+      '<button type="button" data-rename-model="' + escapeHtml(model.name) + '" aria-label="Rename model" title="Rename model" class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-line text-zinc-400 transition hover:border-zinc-600 hover:text-white">' +
+        '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>' +
+      '</button>' +
       '<button type="button" data-delete-model="' + escapeHtml(model.name) + '" class="shrink-0 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1.5 text-[11px] font-medium text-red-300 transition hover:bg-red-500/20">Delete</button>' +
-    '</div>'
-  )).join('');
+    '</div>';
+  }).join('');
 }
 
 async function refreshModelManager() {
@@ -968,7 +1105,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '3.0.0';
+  let version = '3.0.1';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -1011,7 +1148,13 @@ async function releaseLoadedModel() {
 }
 
 async function deleteModel(filename) {
-  if (!confirm('Delete ' + filename + '?')) return;
+  const confirmed = await showConfirm({
+    title: 'Delete model',
+    description: 'Delete ' + filename + '? This removes the file from your device.',
+    confirmText: 'Delete',
+    danger: true,
+  });
+  if (!confirmed) return;
   const { Filesystem } = getPlugins();
   const deletingActive = modelName === filename;
 
@@ -1042,7 +1185,13 @@ async function deleteModel(filename) {
 }
 
 async function deleteAllModels() {
-  if (!confirm('Delete every downloaded model? This cannot be undone.')) return;
+  const confirmed = await showConfirm({
+    title: 'Delete all models',
+    description: 'Delete every downloaded model? This cannot be undone.',
+    confirmText: 'Delete All',
+    danger: true,
+  });
+  if (!confirmed) return;
   const { Filesystem } = getPlugins();
 
   await releaseLoadedModel();
@@ -1078,7 +1227,13 @@ async function deleteAllModels() {
 }
 
 async function clearAppData() {
-  if (!confirm('Delete all downloaded models and clear the current chat?')) return;
+  const confirmed = await showConfirm({
+    title: 'Clear app data',
+    description: 'Delete all downloaded models and clear every chat? This cannot be undone.',
+    confirmText: 'Clear Data',
+    danger: true,
+  });
+  if (!confirmed) return;
 
   try {
     await releaseLoadedModel();
@@ -1540,6 +1695,7 @@ async function onModelReady(options) {
 // ============================================================
 function appendMessage(role, content, options) {
   const persist = !options || options.persist !== false;
+  let editIndex = options && Number.isInteger(options.index) ? options.index : -1;
   if (persist) {
     let session = getActiveSession();
     if (!session && modelName) {
@@ -1550,7 +1706,10 @@ function appendMessage(role, content, options) {
     }
     if (session) {
       session.messages.push({ role, content });
-      if (role === 'user') updateActiveSessionTitle(content);
+      if (role === 'user') {
+        updateActiveSessionTitle(content);
+        editIndex = session.messages.length - 1;
+      }
       saveSessions();
     }
   }
@@ -1562,8 +1721,14 @@ function appendMessage(role, content, options) {
     : 'group mb-9 flex gap-3';
 
   if (role === 'user') {
+    const editButton = editIndex >= 0
+      ? '<button type="button" data-edit-message-index="' + editIndex + '" aria-label="Edit message" title="Edit message" class="flex h-5 w-5 items-center justify-center rounded text-zinc-600 transition hover:bg-white/5 hover:text-white">' +
+          '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>' +
+        '</button>'
+      : '';
     div.innerHTML =
       '<div class="mb-1.5 flex items-center gap-2 pr-0.5">' +
+        editButton +
         '<span class="font-mono text-[10px] uppercase tracking-[0.12em] text-zinc-600">You</span>' +
       '</div>' +
       '<div class="max-w-[85%] rounded-lg rounded-br-sm border border-white/[0.04] bg-line px-3.5 py-2.5 sm:max-w-[75%]">' +
@@ -1859,6 +2024,8 @@ async function generateResponse(userPrompt) {
     isGenerating = false;
     generationAbortRequested = false;
     updateSendButton();
+    sendBtn.innerHTML = SEND_ICON_HTML;
+    sendBtn.setAttribute('aria-label', 'Send message');
   }
 }
 
@@ -1867,6 +2034,7 @@ async function generateResponse(userPrompt) {
 // ============================================================
 function openQuickSettings() {
   applySettingsToControls();
+  setAdvancedSettingsExpanded(false);
   if (!quickSettingsSheet) return;
   quickSettingsSheet.style.display = 'flex';
 }
@@ -2080,13 +2248,6 @@ settingsModal.addEventListener('click', (event) => {
 });
 clearDataBtn.addEventListener('click', clearAppData);
 deleteAllModelsBtn.addEventListener('click', deleteAllModels);
-renameModelBtn.addEventListener('click', renameActiveModel);
-renameModelInput.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    renameActiveModel();
-  }
-});
 importChatBtn.addEventListener('click', importChat);
 exportChatBtn.addEventListener('click', exportActiveChat);
 
@@ -2126,6 +2287,19 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
+function setAdvancedSettingsExpanded(expanded) {
+  if (!advancedSettingsPanel || !advancedSettingsToggle) return;
+  advancedSettingsPanel.classList.toggle('hidden', !expanded);
+  advancedSettingsToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  const label = advancedSettingsToggle.querySelector('[data-advanced-label]');
+  if (label) label.innerText = expanded ? 'Hide advanced' : 'Advanced';
+}
+
+advancedSettingsToggle.addEventListener('click', () => {
+  const expanded = advancedSettingsPanel.classList.contains('hidden');
+  setAdvancedSettingsExpanded(expanded);
+});
+
 temperatureSlider.addEventListener('input', () => {
   appSettings.temperature = clampNumber(temperatureSlider.value, 0, 1, DEFAULT_SETTINGS.temperature);
   temperatureValue.innerText = appSettings.temperature.toFixed(1);
@@ -2139,9 +2313,42 @@ maxTokensSlider.addEventListener('input', () => {
 });
 
 modelList.addEventListener('click', (event) => {
+  const renameButton = event.target.closest('[data-rename-model]');
+  if (renameButton) {
+    openAliasModal(renameButton.getAttribute('data-rename-model'));
+    return;
+  }
   const button = event.target.closest('[data-delete-model]');
   if (!button) return;
   deleteModel(button.getAttribute('data-delete-model'));
+});
+
+// MODEL ALIAS MODAL
+aliasModalCancel.addEventListener('click', closeAliasModal);
+aliasModalSave.addEventListener('click', saveAliasFromModal);
+aliasModal.addEventListener('click', (event) => {
+  if (event.target === aliasModal) closeAliasModal();
+});
+aliasModalInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    saveAliasFromModal();
+  }
+  if (event.key === 'Escape') closeAliasModal();
+});
+
+// CUSTOM CONFIRM MODAL
+confirmModalCancel.addEventListener('click', () => resolveConfirm(false));
+confirmModalConfirm.addEventListener('click', () => resolveConfirm(true));
+confirmModal.addEventListener('click', (event) => {
+  if (event.target === confirmModal) resolveConfirm(false);
+});
+
+// EDIT USER MESSAGE
+messagesEl.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-edit-message-index]');
+  if (!button) return;
+  editUserMessage(Number(button.getAttribute('data-edit-message-index')));
 });
 
 // SESSION LIST
@@ -2184,8 +2391,9 @@ async function initApp() {
     requestStartupPermissions();
     updateStorageLocation();
 
-    // 1. Restore generation settings.
+    // 1. Restore generation settings and model aliases.
     await loadSettings();
+    await loadModelAliases();
 
     // 2. Restore scoped sessions for every model.
     await loadSessions();

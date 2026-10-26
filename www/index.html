@@ -186,7 +186,6 @@
         <!-- Personality -->
         <section class="rounded-xl border border-line bg-panel p-4">
           <h3 class="text-[13px] font-semibold tracking-tight text-white">System Prompt / Personality</h3>
-          <p class="mt-0.5 font-mono text-[10.5px] leading-relaxed text-zinc-500">Saved per model and prepended to every conversation.</p>
           <textarea id="system-prompt-input" rows="4" placeholder="Describe how this model should behave..."
                     class="scroll-thin mt-3 block max-h-48 w-full resize-none rounded-md border border-line bg-base px-3 py-2.5 font-mono text-[12.5px] leading-relaxed text-white outline-none transition placeholder:text-zinc-600 focus:border-zinc-600"></textarea>
           <div class="mt-2 flex items-center justify-between">
@@ -200,24 +199,10 @@
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 class="text-[13px] font-semibold tracking-tight text-white">Model Manager</h3>
-              <p class="mt-0.5 font-mono text-[10.5px] leading-relaxed text-zinc-500">Models in app-private storage.</p>
             </div>
             <button type="button" id="delete-all-models-btn" class="flex h-8 items-center justify-center rounded-md border border-red-500/30 bg-red-500/10 px-2.5 text-[11.5px] font-medium text-red-300 transition hover:bg-red-500/20">
               Delete All Models
             </button>
-          </div>
-
-          <div class="mt-3">
-            <label for="rename-model-input" class="font-mono text-[10px] uppercase tracking-[0.1em] text-zinc-500">Rename active model</label>
-            <div class="mt-1.5 flex items-center gap-2">
-              <input id="rename-model-input" type="text" placeholder="Display name"
-                     class="h-9 min-w-0 flex-1 rounded-md border border-line bg-base px-3 font-mono text-[12px] text-white outline-none transition placeholder:text-zinc-600 focus:border-zinc-600" />
-              <button type="button" id="rename-model-btn"
-                      class="flex h-9 shrink-0 items-center justify-center rounded-md border border-line bg-white/[0.03] px-3 text-[12px] font-medium text-zinc-200 transition hover:border-zinc-600 hover:bg-white/[0.06]">
-                Rename
-              </button>
-            </div>
-            <p id="rename-model-status" class="mt-1.5 break-all font-mono text-[10px] text-zinc-600">No active model.</p>
           </div>
 
           <div id="model-list" class="mt-3 space-y-2">
@@ -228,7 +213,6 @@
         <!-- Chat data -->
         <section class="rounded-xl border border-line bg-panel p-4">
           <h3 class="text-[13px] font-semibold tracking-tight text-white">Chat Data</h3>
-          <p class="mt-0.5 font-mono text-[10.5px] leading-relaxed text-zinc-500">Restore a chat from a Fern JSON export.</p>
           <button type="button" id="import-chat-btn" class="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-md border border-line bg-base text-[12px] font-medium text-zinc-300 transition hover:border-zinc-600 hover:text-white">
             <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             Import Chat (.json)
@@ -257,7 +241,7 @@
           <h3 class="text-[13px] font-semibold tracking-tight text-white">About</h3>
           <div class="mt-3 flex items-center justify-between">
             <span class="font-mono text-[10.5px] uppercase tracking-[0.1em] text-zinc-500">Version</span>
-            <span id="app-version" class="font-mono text-[12px] text-zinc-300">3.0.0</span>
+            <span id="app-version" class="font-mono text-[12px] text-zinc-300">3.0.1</span>
           </div>
           <a href="https://github.com/swiss9/fern" target="_blank" rel="noopener noreferrer"
              class="mt-3 flex h-9 w-full items-center justify-center rounded-md border border-line bg-base font-mono text-[11.5px] text-zinc-300 transition hover:border-zinc-600 hover:text-white">
@@ -266,6 +250,51 @@
           <p class="mt-2 font-mono text-[10px] leading-relaxed text-zinc-600">Fern is a local-first AI client. Inference runs on-device via llama.cpp.</p>
         </section>
 
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Alias Modal -->
+<div id="alias-modal" class="fixed inset-0 z-[140] flex-col items-center justify-center bg-black/80 px-4 backdrop-blur-sm" style="display: none;">
+  <div class="w-full max-w-md overflow-hidden rounded-xl border border-line bg-panel shadow-[0_24px_64px_-16px_rgba(0,0,0,0.95)]">
+    <div class="border-b border-line px-4 py-3">
+      <p class="font-mono text-[10px] uppercase tracking-[0.12em] text-zinc-500">Model Alias</p>
+      <h2 class="mt-0.5 text-[14px] font-semibold tracking-tight text-white">Rename model</h2>
+    </div>
+    <div class="px-4 py-4">
+      <p id="alias-modal-filename" class="break-all font-mono text-[10.5px] leading-relaxed text-zinc-500"></p>
+      <input id="alias-modal-input" type="text" placeholder="Model name"
+             class="mt-3 h-10 w-full rounded-md border border-line bg-base px-3 font-mono text-[12.5px] text-white outline-none transition placeholder:text-zinc-600 focus:border-zinc-600" />
+      <p class="mt-2 font-mono text-[10px] leading-relaxed text-zinc-600">Leave blank to use the filename.</p>
+      <div class="mt-4 flex gap-2">
+        <button type="button" id="alias-modal-cancel" class="flex h-9 flex-1 items-center justify-center rounded-md border border-line bg-base text-[12.5px] font-medium text-zinc-300 transition hover:border-zinc-600 hover:text-white">
+          Cancel
+        </button>
+        <button type="button" id="alias-modal-save" class="flex h-9 flex-1 items-center justify-center rounded-md border border-white/20 bg-white text-[12.5px] font-medium text-base transition hover:bg-zinc-200">
+          Save
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Custom Confirm Modal -->
+<div id="confirm-modal" class="fixed inset-0 z-[145] flex-col items-center justify-center bg-black/80 px-4 backdrop-blur-sm" style="display: none;">
+  <div class="w-full max-w-md overflow-hidden rounded-xl border border-line bg-panel shadow-[0_24px_64px_-16px_rgba(0,0,0,0.95)]">
+    <div class="border-b border-line px-4 py-3">
+      <p class="font-mono text-[10px] uppercase tracking-[0.12em] text-zinc-500">Confirm</p>
+      <h2 id="confirm-modal-title" class="mt-0.5 text-[14px] font-semibold tracking-tight text-white">Confirm</h2>
+    </div>
+    <div class="px-4 py-4">
+      <p id="confirm-modal-description" class="break-words font-mono text-[12px] leading-relaxed text-zinc-400"></p>
+      <div class="mt-4 flex gap-2">
+        <button type="button" id="confirm-modal-cancel" class="flex h-9 flex-1 items-center justify-center rounded-md border border-line bg-base text-[12.5px] font-medium text-zinc-300 transition hover:border-zinc-600 hover:text-white">
+          Cancel
+        </button>
+        <button type="button" id="confirm-modal-confirm" class="flex h-9 flex-1 items-center justify-center rounded-md border border-red-500/40 bg-red-500/15 text-[12.5px] font-medium text-red-200 transition hover:bg-red-500/25">
+          Confirm
+        </button>
       </div>
     </div>
   </div>
@@ -479,25 +508,37 @@
       </button>
     </div>
 
-    <div class="mx-auto mt-5 w-full max-w-2xl space-y-5">
-      <div>
-        <div class="flex items-center justify-between">
-          <label for="temperature-slider" class="text-[12.5px] text-zinc-300">Temperature</label>
-          <span id="temperature-value" class="rounded border border-line px-1.5 py-[2px] font-mono text-[10.5px] text-zinc-400">0.7</span>
-        </div>
-        <input id="temperature-slider" type="range" min="0" max="1" step="0.1" value="0.7"
-               class="mt-2 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-line accent-white" />
-        <div class="mt-1 flex justify-between font-mono text-[9.5px] text-zinc-600"><span>0.0 precise</span><span>1.0 creative</span></div>
-      </div>
+    <div class="mx-auto mt-5 w-full max-w-2xl">
+      <button type="button" id="advanced-settings-toggle" aria-expanded="false"
+              class="flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.12em] text-zinc-500 transition hover:text-white">
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        <span data-advanced-label>Advanced</span>
+      </button>
 
-      <div>
-        <div class="flex items-center justify-between">
-          <label for="max-tokens-slider" class="text-[12.5px] text-zinc-300">Max Tokens</label>
-          <span id="max-tokens-value" class="rounded border border-line px-1.5 py-[2px] font-mono text-[10.5px] text-zinc-400">512</span>
+      <div id="advanced-settings-panel" class="mt-4 hidden space-y-5">
+        <div>
+          <div class="flex items-center justify-between">
+            <label for="temperature-slider" class="text-[12.5px] text-zinc-300">Temperature</label>
+            <span id="temperature-value" class="rounded border border-line px-1.5 py-[2px] font-mono text-[10.5px] text-zinc-400">0.6</span>
+          </div>
+          <input id="temperature-slider" type="range" min="0" max="1" step="0.1" value="0.6"
+                 class="mt-2 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-line accent-white" />
+          <div class="mt-1 flex justify-between font-mono text-[9.5px] text-zinc-600"><span>0.0 precise</span><span>1.0 creative</span></div>
         </div>
-        <input id="max-tokens-slider" type="range" min="128" max="2048" step="64" value="512"
-               class="mt-2 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-line accent-white" />
-        <div class="mt-1 flex justify-between font-mono text-[9.5px] text-zinc-600"><span>128</span><span>2048</span></div>
+
+        <div>
+          <div class="flex items-center justify-between">
+            <label for="max-tokens-slider" class="text-[12.5px] text-zinc-300">Max Tokens</label>
+            <span id="max-tokens-value" class="rounded border border-line px-1.5 py-[2px] font-mono text-[10.5px] text-zinc-400">512</span>
+          </div>
+          <input id="max-tokens-slider" type="range" min="128" max="2048" step="64" value="512"
+                 class="mt-2 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-line accent-white" />
+          <div class="mt-1 flex justify-between font-mono text-[9.5px] text-zinc-600"><span>128</span><span>2048</span></div>
+        </div>
+
+        <p class="rounded-md border border-amber-500/20 bg-amber-500/[0.06] px-2.5 py-2 font-mono text-[10px] leading-relaxed text-amber-300/90">
+          High temperatures may cause small models to hallucinate.
+        </p>
       </div>
     </div>
   </div>

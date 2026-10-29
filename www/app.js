@@ -418,6 +418,8 @@ function setModelLabels(name) {
   if (name) modelDisplayName = display;
   document.getElementById('sidebar-model-label').innerText = display || 'No model';
   document.getElementById('active-model-chip').innerText = display ? display.toUpperCase() : 'NO MODEL';
+  const avatarEl = document.getElementById('sidebar-model-avatar');
+  if (avatarEl) avatarEl.innerHTML = getModelAvatarHTML(display);
   setMultimodalSupport(!!name && isMultimodal(name));
 }
 
@@ -441,6 +443,24 @@ function getModelAlias(name) {
   if (!key) return '';
   const alias = modelAliases[key];
   return typeof alias === 'string' && alias.trim() ? alias.trim() : key;
+}
+
+const FERN_SHIELD_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 80 80" fill="none" role="img" aria-label="Fern">' +
+    '<path fill="#ffffff" fill-rule="evenodd" clip-rule="evenodd" d="M40 3L70 25L60 55L40 77L20 55L10 25Z M40 12L18 27L35 43L22 39L40 61L58 39L45 43L62 27Z"/>' +
+  '</svg>';
+
+function getModelAvatarHTML(modelNameValue) {
+  const name = typeof modelNameValue === 'string' ? modelNameValue.trim() : '';
+  if (!name) {
+    return '<div class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-zinc-700 bg-zinc-800">' +
+      FERN_SHIELD_SVG +
+    '</div>';
+  }
+  const letter = Array.from(name)[0].toUpperCase();
+  return '<div class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-zinc-700 bg-zinc-800 font-sans text-[11px] font-bold text-white uppercase">' +
+    escapeHtml(letter) +
+  '</div>';
 }
 
 function syncModelDisplayName() {
@@ -551,12 +571,13 @@ async function saveAliasFromModal() {
     const oldSessions = Array.isArray(sessions[oldKey]) ? sessions[oldKey] : [];
     const existing = Array.isArray(sessions[newKey]) ? sessions[newKey] : [];
     if (oldSessions.length) {
-      sessions[newKey] = oldSessions.concat(existing);
+      sessions[newKey] = mergeSessionLists(oldSessions, existing);
     }
     delete sessions[oldKey];
   }
 
   await saveModelAliases();
+  await saveSessions();
 
   if (filename === modelName) {
     syncModelDisplayName();
@@ -564,7 +585,6 @@ async function saveAliasFromModal() {
     updatePersonalizationControls();
     renderSidebarSessions();
     renderSessionMessages();
-    await saveSessions();
   }
 
   closeAliasModal();
@@ -603,6 +623,20 @@ function normalizeSessionsData(parsed) {
   });
 
   return result;
+}
+
+function mergeSessionLists(primary, secondary) {
+  const seen = new Set();
+  const merged = [];
+  (Array.isArray(primary) ? primary : [])
+    .concat(Array.isArray(secondary) ? secondary : [])
+    .forEach((session) => {
+      if (!session) return;
+      if (session.id && seen.has(session.id)) return;
+      if (session.id) seen.add(session.id);
+      merged.push(session);
+    });
+  return merged;
 }
 
 function createSessionId() {
@@ -803,6 +837,7 @@ async function loadSessions() {
         console.warn('Could not parse saved sessions:', error);
         sessions = {};
       }
+      await migrateSessionsToAliases();
       return;
     }
 
@@ -822,6 +857,23 @@ async function loadSessions() {
   } catch (error) {
     console.warn('Could not load chat sessions:', error);
   }
+}
+
+async function migrateSessionsToAliases() {
+  let changed = false;
+
+  Object.keys(modelAliases).forEach((filename) => {
+    const alias = modelAliases[filename];
+    if (!alias || alias === filename) return;
+    const fileSessions = sessions[filename];
+    if (!Array.isArray(fileSessions) || fileSessions.length === 0) return;
+    const aliasSessions = Array.isArray(sessions[alias]) ? sessions[alias] : [];
+    sessions[alias] = mergeSessionLists(fileSessions, aliasSessions);
+    delete sessions[filename];
+    changed = true;
+  });
+
+  if (changed) await saveSessions();
 }
 
 async function clearLegacyChatHistory() {
@@ -1196,7 +1248,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '3.0.9';
+  let version = '3.1.2';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -1786,6 +1838,7 @@ async function pickAndLoadModel() {
     await loadModelFile(rawPath, null, { exact: true });
     await saveActiveModelName(file.name);
     await onModelReady();
+    await refreshModelManager();
   } catch (error) {
     const message = String((error && error.message) || error || '');
     if ((error && error.fernCancelled) || /cancel/i.test(message)) {
@@ -1932,11 +1985,7 @@ function appendMessage(role, content, options) {
       '</div>';
   } else {
     div.innerHTML =
-      '<div class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-line bg-panel">' +
-        '<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" role="img" aria-label="' + escapeHtml(displayName) + '">' +
-          '<path fill="#ffffff" fill-rule="evenodd" clip-rule="evenodd" d="M7.6 2.2c.6-.2 1.2.2 1.3.8l.5 2.9c.9-.4 1.7-.6 2.6-.6s1.7.2 2.6.6l.5-2.9c.1-.6.7-1 1.3-.8.6.2 1 .8.8 1.4l-.5 3.1c1.5 1.1 2.4 2.8 2.4 4.7 0 2.2-1.2 4.1-3 5.2l-.5 4.2c-.1 1.4-1.3 2.5-2.7 2.5h-2.2c-1.4 0-2.6-1.1-2.7-2.5l-.5-4.2c-1.8-1.1-3-3-3-5.2 0-1.9.9-3.6 2.4-4.7l-.5-3.1c-.2-.6.2-1.2.8-1.4Zm2.3 9.6a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Zm4.2 0a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Z"/>' +
-        '</svg>' +
-      '</div>' +
+      '<div class="mt-0.5 shrink-0">' + getModelAvatarHTML(displayName) + '</div>' +
       '<div class="min-w-0 flex-1">' +
         '<div class="mb-1.5 flex items-center gap-2">' +
           '<span class="text-[12px] font-semibold tracking-tight text-white">' + escapeHtml(displayName) + '</span>' +
@@ -2071,11 +2120,7 @@ function showTypingIndicator() {
   div.className = 'group mb-9 flex gap-3';
   div.setAttribute('aria-label', 'Fern is typing');
   div.innerHTML =
-    '<div class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-line bg-panel">' +
-      '<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
-        '<path fill="#ffffff" fill-rule="evenodd" clip-rule="evenodd" d="M7.6 2.2c.6-.2 1.2.2 1.3.8l.5 2.9c.9-.4 1.7-.6 2.6-.6s1.7.2 2.6.6l.5-2.9c.1-.6.7-1 1.3-.8.6.2 1 .8.8 1.4l-.5 3.1c1.5 1.1 2.4 2.8 2.4 4.7 0 2.2-1.2 4.1-3 5.2l-.5 4.2c-.1 1.4-1.3 2.5-2.7 2.5h-2.2c-1.4 0-2.6-1.1-2.7-2.5l-.5-4.2c-1.8-1.1-3-3-3-5.2 0-1.9.9-3.6 2.4-4.7l-.5-3.1c-.2-.6.2-1.2.8-1.4Zm2.3 9.6a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Zm4.2 0a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1Z"/>' +
-      '</svg>' +
-    '</div>' +
+    '<div class="mt-0.5 shrink-0">' + getModelAvatarHTML(modelDisplayName || modelName) + '</div>' +
     '<div class="min-w-0 flex-1">' +
       '<div class="mb-1.5 flex items-center gap-2">' +
         '<span class="text-[12px] font-semibold tracking-tight text-white">' + escapeHtml(modelDisplayName || modelName || 'Local model') + '</span>' +

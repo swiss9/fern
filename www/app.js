@@ -42,6 +42,7 @@ function createNativeLlamaBridge() {
           temperature: params.temperature,
           top_k: params.top_k,
           penalty_repeat: params.penalty_repeat,
+          stop: Array.isArray(params.stop) ? params.stop : undefined,
           emit_partial_completion: !!callback,
         };
         if (params.prompt) {
@@ -593,13 +594,16 @@ async function saveAliasFromModal() {
 
 function normalizeMessageList(list) {
   return (Array.isArray(list) ? list : [])
-    .filter((message) =>
-      message &&
-      typeof message.role === 'string' &&
-      typeof message.content === 'string' &&
-      (message.role === 'user' || message.role === 'assistant')
-    )
-    .map((message) => ({ role: message.role, content: message.content }));
+    .filter((message) => {
+      if (!message || typeof message.role !== 'string' || typeof message.content !== 'string') return false;
+      const role = message.role.trim().toLowerCase();
+      if (role !== 'user' && role !== 'assistant') return false;
+      return message.content.trim().length > 0;
+    })
+    .map((message) => ({
+      role: message.role.trim().toLowerCase(),
+      content: message.content,
+    }));
 }
 
 function normalizeSessionsData(parsed) {
@@ -1248,7 +1252,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '3.1.2';
+  let version = '3.1.4';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -2011,6 +2015,8 @@ function lastAssistantBubble() {
 // 6. GENERATION
 // ============================================================
 const FERN_SYSTEM_PROMPT = 'You are Fern, a helpful local AI.';
+const QWEN_STOP_TOKENS = ['<|im_end|>', '<|endoftext|>'];
+const GENERATION_TIMEOUT_MS = 60000;
 
 function buildChatMessages(history) {
   const systemPrompt = (customSystemPrompt && customSystemPrompt.trim()) || FERN_SYSTEM_PROMPT;
@@ -2125,7 +2131,8 @@ function showTypingIndicator() {
       '<div class="mb-1.5 flex items-center gap-2">' +
         '<span class="text-[12px] font-semibold tracking-tight text-white">' + escapeHtml(modelDisplayName || modelName || 'Local model') + '</span>' +
       '</div>' +
-      '<div class="flex h-6 items-center gap-1.5">' +
+      '<p class="font-mono text-[13.5px] leading-[1.75] text-white whitespace-pre-wrap"></p>' +
+      '<div data-typing-dots class="flex h-6 items-center gap-1.5">' +
         '<span class="typing-dot"></span>' +
         '<span class="typing-dot"></span>' +
         '<span class="typing-dot"></span>' +
@@ -2133,6 +2140,7 @@ function showTypingIndicator() {
     '</div>';
 
   messagesEl.appendChild(div);
+  hideEmptyState();
   chatContainer.scrollTop = chatContainer.scrollHeight;
   return div;
 }
@@ -2174,25 +2182,22 @@ async function generateResponse(userPrompt) {
   inputEl.value = '';
   inputEl.style.height = 'auto';
 
-  const typing = showTypingIndicator();
-  let bubble = null;
-  let bubbleText = null;
+  const bubble = showTypingIndicator();
+  const bubbleText = bubble.querySelector('p');
+  let bubbleDots = bubble.querySelector('[data-typing-dots]');
 
   const revealBubble = (content) => {
-    if (typing.parentNode) typing.remove();
-    if (!bubble) {
-      bubble = appendMessage('assistant', content || '', { persist: false });
-      bubbleText = bubble.querySelector('p');
-    }
+    if (bubbleDots && bubbleDots.parentNode) bubbleDots.remove();
+    bubbleDots = null;
+    if (bubble.id === 'typing-indicator') bubble.removeAttribute('id');
+    if (typeof content === 'string') bubbleText.innerText = content;
     return bubbleText;
   };
 
   const finalizeStopped = () => {
-    if (typing.parentNode) typing.remove();
     const partial = bubbleText ? bubbleText.innerText : '';
     if (partial.trim()) {
-      if (!bubble) revealBubble(partial);
-      bubbleText.innerText = partial;
+      revealBubble(partial);
       persistAssistantMessage(partial);
     } else if (bubble && bubble.parentNode) {
       bubble.remove();
@@ -2200,8 +2205,24 @@ async function generateResponse(userPrompt) {
     chatContainer.scrollTop = chatContainer.scrollHeight;
   };
 
+  let timeoutFinalized = false;
+  const finalizeTimedOut = () => {
+    if (timeoutFinalized) return;
+    timeoutFinalized = true;
+    const partial = bubbleText ? bubbleText.innerText : '';
+    const timeoutText = partial.trim()
+      ? partial + '\n\n[Generation timed out]'
+      : 'Generation timed out';
+    revealBubble(timeoutText);
+    persistAssistantMessage(timeoutText);
+    notifyBackgroundResponse(timeoutText);
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+  };
+
   isGenerating = true;
   generationAbortRequested = false;
+  let generationTimedOut = false;
+  let timeoutId = null;
   updateSendButton();
   await keepScreenAwake();
 
@@ -2218,6 +2239,23 @@ async function generateResponse(userPrompt) {
       finalizeStopped();
       return;
     }
+
+    timeoutId = setTimeout(() => {
+      if (!isGenerating || generationTimedOut) return;
+      generationTimedOut = true;
+      finalizeTimedOut();
+      stopGeneration();
+    }, GENERATION_TIMEOUT_MS);
+
+    const tokenCallback = (data) => {
+      const tok = (data && (data.token || data.content || data.text)) || '';
+      if (!tok || generationTimedOut || generationAbortRequested) return;
+      streamed = true;
+      revealBubble();
+      bubbleText.innerText += tok;
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+    };
+
     const result = await activeContext.completion({
       prompt,
       n_predict: appSettings.maxTokens,
@@ -2225,16 +2263,18 @@ async function generateResponse(userPrompt) {
       top_k: 40,
       penalty_repeat: appSettings.repeatPenalty,
       repeat_penalty: appSettings.repeatPenalty,
-    }, (data) => {
-      const tok = (data && (data.token || data.content)) || '';
-      if (tok) {
-        streamed = true;
-        revealBubble();
-        bubbleText.innerText += tok;
-        chatContainer.scrollTop = chatContainer.scrollHeight;
-      }
-    });
+      stop: QWEN_STOP_TOKENS,
+    }, tokenCallback);
 
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+
+    if (generationTimedOut) {
+      finalizeTimedOut();
+      return;
+    }
     if (generationAbortRequested) {
       finalizeStopped();
       return;
@@ -2248,22 +2288,29 @@ async function generateResponse(userPrompt) {
     notifyBackgroundResponse(finalText);
     chatContainer.scrollTop = chatContainer.scrollHeight;
   } catch (error) {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    if (generationTimedOut) {
+      finalizeTimedOut();
+      return;
+    }
     if (generationAbortRequested) {
       finalizeStopped();
       return;
     }
     console.error('Generation error:', error);
     if (isOutOfMemoryError(error)) {
-      revealBubble('');
-      if (typing.parentNode) typing.remove();
+      if (bubble && bubble.parentNode) bubble.remove();
       showErrorOverlay('Out of Memory', "Out of Memory: Your device couldn't handle this model. Please try a smaller model.");
     } else {
       const message = '[Error: ' + (error.message || String(error)) + ']';
       revealBubble(message);
-      bubbleText.innerText = message;
       persistAssistantMessage(message);
     }
   } finally {
+    if (timeoutId) clearTimeout(timeoutId);
     await allowScreenSleep();
     isGenerating = false;
     generationAbortRequested = false;
@@ -2421,7 +2468,18 @@ async function importChat() {
       title: imported.title.slice(0, 60),
       messages: imported.messages,
     };
-    ensureModelSessions(modelName).unshift(session);
+
+    await loadModelAliases();
+    syncModelDisplayName();
+    setModelLabels(modelName);
+
+    const sessionKey = sessionKeyForModel(modelName) || modelName;
+    if (sessionKey !== modelName && Array.isArray(sessions[modelName]) && sessions[modelName].length > 0) {
+      sessions[sessionKey] = mergeSessionLists(sessions[sessionKey], sessions[modelName]);
+      delete sessions[modelName];
+    }
+    if (!Array.isArray(sessions[sessionKey])) sessions[sessionKey] = [];
+    sessions[sessionKey].unshift(session);
     activeSessionId = session.id;
     renderSidebarSessions();
     renderSessionMessages();

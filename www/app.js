@@ -204,7 +204,6 @@ const SETTINGS_KEY = 'fern.settings';
 const SESSIONS_KEY = 'fern.sessions';
 const LEGACY_CHAT_HISTORY_KEY = 'chatHistory';
 const ACTIVE_MODEL_KEY = 'activeModelName';
-const SYSTEM_PROMPT_PREFIX = 'systemPrompt_';
 const MODEL_ALIASES_KEY = 'fern.modelAliases';
 const DEFAULT_SETTINGS = { temperature: 0.6, maxTokens: 512, repeatPenalty: 1.15 };
 let activeDownloadCancel = null;
@@ -298,7 +297,11 @@ function closeErrorOverlay() {
   errorOverlay.classList.add('hidden');
   errorOverlay.style.display = 'none';
   hideOverlay();
-  resetToNoModelState();
+  if (!modelName) {
+    resetToNoModelState();
+  } else {
+    setSendEnabled(contextReady);
+  }
 }
 
 let ramWarningResolve = null;
@@ -965,7 +968,7 @@ async function activateModelSessions() {
 function getSystemPromptKey(name) {
   const key = name || modelName;
   if (!key) return '';
-  return SYSTEM_PROMPT_PREFIX + key;
+  return `systemPrompt_${key}`;
 }
 
 async function loadModelPersonalization() {
@@ -1188,12 +1191,33 @@ function modelPowerBars(level) {
   return '<span class="flex shrink-0 items-center gap-[3px] font-mono text-[10px] leading-none">' + bars + '</span>';
 }
 
-function renderModelSelector() {
+async function renderModelSelector() {
   if (!modelSelectorList) return;
+
+  let installed = [];
+  try {
+    installed = await readInstalledModels();
+  } catch (error) {
+    console.warn('Could not list models for the selector:', error);
+  }
+
+  const installedNames = new Set(installed.map((model) => model.name));
+  const installedRows = installed.map((model) => {
+    const displayName = getModelAlias(model.name);
+    const isActive = model.name === modelName && contextReady;
+    const status = isActive
+      ? '<span class="shrink-0 bg-white px-1 font-mono text-[9px] font-bold leading-4 text-black">[ACTIVE]</span>'
+      : '<span class="shrink-0 text-[10px] text-zinc-500">' + formatBytes(model.size) + '</span>';
+    return '<button type="button" data-load-model="' + escapeHtml(model.name) + '" class="model-select-row flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left font-mono transition hover:bg-white/[0.04]">' +
+      getModelAvatarHTML(displayName) +
+      '<span class="min-w-0 flex-1 truncate text-[11px] ' + (isActive ? 'text-white' : 'text-zinc-300') + '">' + escapeHtml(displayName) + '</span>' +
+      status +
+    '</button>';
+  }).join('');
+
   const deviceMemory = Number(navigator.deviceMemory) || 0;
   const recId = deviceMemory > 6 ? 'llama-3.2-3b' : 'llama-3.2-1b';
-
-  modelSelectorList.innerHTML = MODEL_CATALOG.map((model) => {
+  const catalogRows = MODEL_CATALOG.filter((model) => !installedNames.has(model.file)).map((model) => {
     const rec = model.id === recId
       ? '<span class="shrink-0 bg-white px-1 font-mono text-[9px] font-bold leading-4 text-black">[REC]</span>'
       : '<span class="w-[31px] shrink-0"></span>';
@@ -1204,6 +1228,15 @@ function renderModelSelector() {
       rec +
     '</button>';
   }).join('');
+
+  const installedSection = installedRows || '<p class="px-2 py-2 font-mono text-[10.5px] leading-relaxed text-zinc-600">No models on this device.</p>';
+  const catalogSection = catalogRows
+    ? '<div class="my-1 border-t border-line"></div>' +
+      '<p class="px-2 pb-1 pt-1 font-mono text-[9px] uppercase tracking-[0.12em] text-zinc-600">Download</p>' +
+      catalogRows
+    : '';
+
+  modelSelectorList.innerHTML = installedSection + catalogSection;
 }
 
 function renderModelList(models) {
@@ -1219,11 +1252,19 @@ function renderModelList(models) {
     const meta = alias && alias.trim()
       ? escapeHtml(model.name) + ' · ' + formatBytes(model.size)
       : formatBytes(model.size);
+    const isActive = model.name === modelName && contextReady;
+    const loadButton = '<button type="button" data-load-model="' + escapeHtml(model.name) + '" class="shrink-0 rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition ' +
+      (isActive
+        ? 'border-white bg-white text-base'
+        : 'border-line bg-white/[0.03] text-zinc-200 hover:border-zinc-600 hover:bg-white/[0.07] hover:text-white') + '">' +
+      (isActive ? 'Loaded' : 'Load') +
+    '</button>';
     return '<div class="flex items-center gap-2 rounded-md border border-line bg-base px-3 py-2.5">' +
       '<div class="min-w-0 flex-1">' +
         '<p class="truncate font-mono text-[11.5px] text-zinc-200">' + escapeHtml(displayName) + '</p>' +
         '<p class="mt-0.5 truncate font-mono text-[10px] text-zinc-600">' + meta + '</p>' +
       '</div>' +
+      loadButton +
       '<button type="button" data-rename-model="' + escapeHtml(model.name) + '" aria-label="Rename model" title="Rename model" class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-line text-zinc-400 transition hover:border-zinc-600 hover:text-white">' +
         '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>' +
       '</button>' +
@@ -1250,7 +1291,9 @@ async function renderModelManager() {
 }
 
 async function refreshModelManager() {
-  return renderModelManager();
+  const models = await renderModelManager();
+  await renderModelSelector();
+  return models;
 }
 
 async function updateStorageMeter() {
@@ -1316,7 +1359,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '3.1.6';
+  let version = '3.1.7';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -1344,12 +1387,28 @@ function closeSettings() {
   settingsModal.style.display = 'none';
 }
 
-async function releaseLoadedModel() {
+async function unloadActiveContext() {
   const pro = llamaCppPro();
-  if (pro) {
-    try { await pro.releaseAllLlama(); } catch (error) {}
+  const context = activeContext;
+  if (!context) return;
+
+  try {
+    if (pro && typeof pro.releaseContext === 'function' && context.id != null) {
+      await pro.releaseContext({ contextId: context.id });
+    } else if (typeof context.release === 'function') {
+      await context.release();
+    } else if (pro) {
+      await pro.releaseAllLlama();
+    }
+  } catch (error) {
+    console.warn('[Fern] Could not release the model context:', error);
   }
-  activeContext = null;
+
+  if (activeContext === context) activeContext = null;
+}
+
+async function releaseLoadedModel() {
+  await unloadActiveContext();
   contextReady = false;
   isGenerating = false;
   generationAbortRequested = false;
@@ -1610,8 +1669,10 @@ async function loadModelFile(modelPath, notify, options) {
       ', native LlamaCpp plugin = ' + diag.nativeLlamaCpp + '.');
   }
 
-  try { await pro.releaseAllLlama(); } catch (e) {}
-  activeContext = null;
+  // Unload only the model that is currently resident in memory. The previous
+  // model file stays on disk so it can be loaded again at any time.
+  await unloadActiveContext();
+  contextReady = false;
 
   await keepScreenAwake();
   try {
@@ -1667,43 +1728,127 @@ async function statModelInData(filename) {
   }
 }
 
-async function downloadAndLoadModel(url, filename) {
+async function loadInstalledModel(filename) {
+  if (!filename) return false;
+
+  if (modelName === filename && contextReady) {
+    await refreshModelManager();
+    return true;
+  }
+
   const { Filesystem } = getPlugins();
+  if (!Filesystem) {
+    showErrorOverlay('Filesystem unavailable', 'The Filesystem plugin is not installed.');
+    return false;
+  }
+
+  if (!(await statModelInData(filename))) {
+    showErrorOverlay('Model not found', filename + ' is no longer on this device.');
+    await refreshModelManager();
+    return false;
+  }
+
+  const previousModelName = modelName;
+  const previousModelDisplayName = modelDisplayName;
+  const previousSessionId = activeSessionId;
+
+  modelName = filename;
+  modelDisplayName = getModelAlias(filename);
+  setModelLabels(filename);
+  renderSidebarSessions();
+  setSendEnabled(false);
+  showOverlay('Loading ' + (modelDisplayName || filename) + ' (this can take a while)...');
+  progressBar.style.display = '';
+  progressBar.style.width = '100%';
+
+  try {
+    const { uri } = await Filesystem.getUri({ path: filename, directory: Directory.Data });
+    if (!uri) throw new Error('Could not resolve the saved model path');
+
+    await loadModelFile(uri, null, { exact: true });
+    await saveActiveModelName(filename);
+    await onModelReady();
+    await updateStorageMeter();
+    await refreshModelManager();
+    return true;
+  } catch (error) {
+    console.error('Model switch failed:', error);
+
+    const previousContextStillLoaded = contextReady && !!previousModelName;
+
+    modelName = previousModelName;
+    modelDisplayName = previousModelDisplayName || (previousModelName ? getModelAlias(previousModelName) : '');
+    activeSessionId = previousSessionId;
+
+    if (previousModelName) {
+      setModelLabels(previousModelName);
+      updatePersonalizationControls();
+      renderSidebarSessions();
+      renderSessionMessages();
+    } else {
+      resetToNoModelState();
+    }
+
+    if (!previousContextStillLoaded) {
+      contextReady = false;
+      activeContext = null;
+
+      if (previousModelName && await statModelInData(previousModelName)) {
+        try {
+          const { uri } = await Filesystem.getUri({ path: previousModelName, directory: Directory.Data });
+          if (uri) {
+            await loadModelFile(uri, null, { exact: true });
+            await saveActiveModelName(previousModelName);
+            await onModelReady({ announce: false });
+          }
+        } catch (restoreError) {
+          console.error('Could not restore the previous model:', restoreError);
+        }
+      }
+
+      if (!contextReady) {
+        setSendEnabled(false);
+      }
+    } else {
+      contextReady = true;
+      setSendEnabled(true);
+    }
+
+    await refreshModelManager();
+    if (!error || !error.fernCancelled) reportModelLoadError(error);
+    return false;
+  } finally {
+    hideOverlay();
+    progressBar.style.display = 'none';
+    progressBar.style.width = '0%';
+  }
+}
+
+async function downloadAndLoadModel(url, filename) {
+  const { Filesystem, FileTransfer } = getPlugins();
 
   if (!Filesystem) {
     showErrorOverlay('Filesystem unavailable', 'The Filesystem plugin is not installed.');
     return;
   }
 
+  // Already on disk: switch to it without touching the file.
   if (await statModelInData(filename)) {
-    setSendEnabled(false);
-    modelName = filename;
-    modelDisplayName = filename;
-    showOverlay('Loading ' + filename + ' (this can take a while)...');
-    progressBar.style.display = '';
-    progressBar.style.width = '100%';
-    try {
-      const { uri } = await Filesystem.getUri({ path: filename, directory: Directory.Data });
-      if (!uri) throw new Error('Could not resolve the saved model path');
-      await loadModelFile(uri, null, { exact: true });
-      await saveActiveModelName(filename);
-      await onModelReady();
-      await updateStorageMeter();
-    } catch (error) {
-      console.error('Model load failed:', error);
-      await clearDownloadNotification();
-      hideOverlay();
-      setSendEnabled(contextReady);
-      if (!error || !error.fernCancelled) reportModelLoadError(error);
-    }
+    await loadInstalledModel(filename);
     return;
   }
 
-  const { FileTransfer } = getPlugins();
   if (!FileTransfer) {
     showErrorOverlay('FileTransfer unavailable', 'The FileTransfer plugin is not installed.');
     return;
   }
+
+  // Download into a partial .tmp file so cancelling can never remove a model
+  // that was already loaded before this download started.
+  const tmpFilename = filename + '.tmp';
+  const previousModelName = modelName;
+  const previousModelDisplayName = modelDisplayName;
+  const previousSessionId = activeSessionId;
 
   showOverlay('Downloading ' + filename + '... Please wait.');
   progressBar.style.display = '';
@@ -1717,8 +1862,25 @@ async function downloadAndLoadModel(url, filename) {
 
   const deletePartialDownload = async () => {
     try {
-      await Filesystem.deleteFile({ path: filename, directory: Directory.Data });
+      await Filesystem.deleteFile({ path: tmpFilename, directory: Directory.Data });
     } catch (cleanupError) {}
+  };
+
+  const restorePreviousModelUI = () => {
+    if (previousModelName) {
+      modelName = previousModelName;
+      modelDisplayName = previousModelDisplayName || getModelAlias(previousModelName);
+      activeSessionId = previousSessionId;
+      setModelLabels(modelName);
+      updatePersonalizationControls();
+      renderSidebarSessions();
+      renderSessionMessages();
+      setSendEnabled(contextReady);
+    } else {
+      resetToNoModelState();
+    }
+    updateSendButton();
+    setSendEnabled(contextReady);
   };
 
   const cancelDownload = async () => {
@@ -1746,8 +1908,9 @@ async function downloadAndLoadModel(url, filename) {
     hideOverlay();
     await deletePartialDownload();
     await clearDownloadNotification();
-    setSendEnabled(contextReady);
-    showErrorOverlay('Download cancelled', 'Download cancelled.');
+    progressBar.style.display = 'none';
+    progressBar.style.width = '0%';
+    restorePreviousModelUI();
   };
 
   activeDownloadCancel = cancelDownload;
@@ -1755,7 +1918,7 @@ async function downloadAndLoadModel(url, filename) {
   try {
     await deletePartialDownload();
 
-    const { uri } = await Filesystem.getUri({ path: filename, directory: Directory.Data });
+    const { uri } = await Filesystem.getUri({ path: tmpFilename, directory: Directory.Data });
     if (!uri) {
       throw new Error('Could not resolve the download destination path');
     }
@@ -1789,6 +1952,51 @@ async function downloadAndLoadModel(url, filename) {
       return;
     }
 
+    let tmpStat = null;
+    try {
+      tmpStat = await Filesystem.stat({ path: tmpFilename, directory: Directory.Data });
+    } catch (statError) {
+      throw new Error('Download failed: File not saved properly.');
+    }
+    if (!tmpStat || Number(tmpStat.size) <= 0) {
+      throw new Error('Download failed: File not saved properly.');
+    }
+
+    // Promote the completed .tmp file to its final model name.
+    let finalized = false;
+    try {
+      await Filesystem.rename({
+        from: tmpFilename,
+        to: filename,
+        directory: Directory.Data,
+        toDirectory: Directory.Data,
+      });
+      finalized = true;
+    } catch (renameError) {
+      try {
+        await Filesystem.copy({
+          from: tmpFilename,
+          to: filename,
+          directory: Directory.Data,
+          toDirectory: Directory.Data,
+        });
+        finalized = true;
+      } catch (copyError) {
+        console.warn('Could not finalize the downloaded model:', copyError);
+      }
+      if (finalized) {
+        try {
+          await Filesystem.deleteFile({ path: tmpFilename, directory: Directory.Data });
+        } catch (cleanupError) {}
+      }
+    }
+
+    if (!finalized) {
+      throw new Error('Download failed: Could not finalize the model file.');
+    }
+
+    if (cancelRequested) return;
+
     let savedStat = null;
     try {
       savedStat = await Filesystem.stat({ path: filename, directory: Directory.Data });
@@ -1815,12 +2023,15 @@ async function downloadAndLoadModel(url, filename) {
     progressBar.style.display = 'none';
 
     modelName = filename;
-    modelDisplayName = filename;
-    showOverlay('Loading ' + filename + ' (this can take a while)...');
+    modelDisplayName = getModelAlias(filename);
+    setModelLabels(filename);
+    renderSidebarSessions();
+    showOverlay('Loading ' + (modelDisplayName || filename) + ' (this can take a while)...');
     await loadModelFile(rawPath, null, { exact: true });
     await saveActiveModelName(filename);
     await onModelReady();
     await updateStorageMeter();
+    await refreshModelManager();
     showModelReadyNotification(filename);
   } catch (error) {
     if (cancelRequested) return;
@@ -1831,7 +2042,21 @@ async function downloadAndLoadModel(url, filename) {
     }
     await clearDownloadNotification();
     hideOverlay();
-    setSendEnabled(contextReady);
+    restorePreviousModelUI();
+
+    if (!contextReady && previousModelName && await statModelInData(previousModelName)) {
+      try {
+        const { uri } = await Filesystem.getUri({ path: previousModelName, directory: Directory.Data });
+        if (uri) {
+          await loadModelFile(uri, null, { exact: true });
+          await saveActiveModelName(previousModelName);
+          await onModelReady({ announce: false });
+        }
+      } catch (restoreError) {
+        console.error('Could not restore the previous model:', restoreError);
+      }
+    }
+
     if (!cancelled) {
       if (isOutOfMemoryError(error)) {
         showErrorOverlay('Out of Memory', "Out of Memory: Your device couldn't handle this model. Please try a smaller model.");
@@ -1855,6 +2080,10 @@ async function downloadAndLoadModel(url, filename) {
 async function pickAndLoadModel() {
   setSendEnabled(false);
   showOverlay('Selecting model file...');
+
+  const previousModelName = modelName;
+  const previousModelDisplayName = modelDisplayName;
+  const previousSessionId = activeSessionId;
 
   try {
     const { FilePicker, Filesystem } = getPlugins();
@@ -1887,7 +2116,9 @@ async function pickAndLoadModel() {
     // source too, which would make the plugin treat the content:// URI as a
     // relative path inside Directory.Data.
     modelName = filename;
-    modelDisplayName = filename;
+    modelDisplayName = getModelAlias(filename);
+    setModelLabels(filename);
+    renderSidebarSessions();
     showOverlay('Importing ' + filename + ' into private storage...');
     await Filesystem.copy({
       from: file.path,
@@ -1912,14 +2143,41 @@ async function pickAndLoadModel() {
     await refreshModelManager();
   } catch (error) {
     const message = String((error && error.message) || error || '');
-    if ((error && error.fernCancelled) || /cancel/i.test(message)) {
-      return;
-    }
+    const cancelled = (error && error.fernCancelled) || /cancel/i.test(message);
     console.error('Model load failed:', error);
+
+    modelName = previousModelName;
+    modelDisplayName = previousModelDisplayName;
+    activeSessionId = previousSessionId;
+
+    if (previousModelName) {
+      setModelLabels(previousModelName);
+      updatePersonalizationControls();
+      renderSidebarSessions();
+      renderSessionMessages();
+    } else {
+      resetToNoModelState();
+    }
+
+    if (!contextReady && previousModelName && await statModelInData(previousModelName)) {
+      try {
+        const { Filesystem } = getPlugins();
+        const { uri } = await Filesystem.getUri({ path: previousModelName, directory: Directory.Data });
+        if (uri) {
+          await loadModelFile(uri, null, { exact: true });
+          await saveActiveModelName(previousModelName);
+          await onModelReady({ announce: false });
+        }
+      } catch (restoreError) {
+        console.error('Could not restore the previous model:', restoreError);
+      }
+    }
+
     setSendEnabled(contextReady);
-    reportModelLoadError(error);
+    if (!cancelled) reportModelLoadError(error);
   } finally {
     hideOverlay();
+    setSendEnabled(contextReady);
   }
 }
 
@@ -2005,6 +2263,7 @@ async function onModelReady(options) {
   setModelLabels(modelName);
   setSendEnabled(true);
   await activateModelSessions();
+  await renderModelSelector();
   if (announce && activeMessages().length === 0) {
     appendMessage('assistant', 'I am running locally on your device. Loaded: ' + (modelDisplayName || modelName) + '. No data leaves this machine.');
   }
@@ -2680,6 +2939,13 @@ document.getElementById('local-model-btn').addEventListener('click', () => {
 // MODEL SELECTOR
 if (modelSelectorList) {
   modelSelectorList.addEventListener('click', (event) => {
+    const loadButton = event.target.closest('[data-load-model]');
+    if (loadButton) {
+      const details = loadButton.closest('details');
+      if (details) details.open = false;
+      loadInstalledModel(loadButton.getAttribute('data-load-model'));
+      return;
+    }
     const button = event.target.closest('[data-model-id]');
     if (!button) return;
     const model = MODEL_CATALOG.find((entry) => entry.id === button.dataset.modelId);
@@ -2780,6 +3046,12 @@ repeatPenaltySlider.addEventListener('input', () => {
 });
 
 modelList.addEventListener('click', (event) => {
+  const loadButton = event.target.closest('[data-load-model]');
+  if (loadButton) {
+    closeSettings();
+    loadInstalledModel(loadButton.getAttribute('data-load-model'));
+    return;
+  }
   const renameButton = event.target.closest('[data-rename-model]');
   if (renameButton) {
     openAliasModal(renameButton.getAttribute('data-rename-model'));
@@ -2871,11 +3143,11 @@ async function initApp() {
     updateAppVersion();
     requestStartupPermissions();
     updateStorageLocation();
-    renderModelSelector();
 
     // 1. Restore generation settings and model aliases.
     await loadSettings();
     await loadModelAliases();
+    await renderModelSelector();
 
     // 2. Restore scoped sessions for every model.
     await loadSessions();

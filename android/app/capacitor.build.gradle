@@ -17,6 +17,7 @@ dependencies {
     implementation project(':capacitor-preferences')
     implementation project(':capacitor-share')
     implementation project(':capacitor-splash-screen')
+    implementation project(':capawesome-team-capacitor-android-foreground-service')
     implementation project(':capawesome-capacitor-file-picker')
     implementation project(':llama-cpp-pro')
 

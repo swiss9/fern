@@ -118,6 +118,7 @@ const getPlugins = () => {
     Preferences: window.Capacitor.Plugins.Preferences,
     KeepAwake: window.Capacitor.Plugins.KeepAwake,
     Share: window.Capacitor.Plugins.Share,
+    ForegroundService: window.Capacitor.Plugins.ForegroundService,
   };
 };
 
@@ -246,6 +247,8 @@ let appSettings = { ...DEFAULT_SETTINGS };
 let contextReady = false;
 let isGenerating = false;
 let generationAbortRequested = false;
+let generationRunId = 0;
+let activeTypewriter = null;
 let sessions = {};
 let activeSessionId = '';
 let chatSearchQuery = '';
@@ -338,6 +341,39 @@ async function allowScreenSleep() {
     }
   } catch (error) {
     console.warn('[Fern] KeepAwake.allowSleep failed:', error);
+  }
+}
+
+const GENERATION_NOTIFICATION = {
+  title: 'Fern is thinking...',
+  body: 'Generating response locally',
+  id: 1,
+  smallIcon: 'ic_stat_fern',
+};
+
+async function startGenerationForegroundService() {
+  try {
+    const { ForegroundService } = getPlugins();
+    if (!ForegroundService) return;
+    if (typeof ForegroundService.startNotification === 'function') {
+      await ForegroundService.startNotification(GENERATION_NOTIFICATION);
+      return;
+    }
+    if (typeof ForegroundService.startForegroundService === 'function') {
+      await ForegroundService.startForegroundService(GENERATION_NOTIFICATION);
+    }
+  } catch (error) {
+    console.warn('[Fern] Could not start the generation foreground service:', error);
+  }
+}
+
+async function stopGenerationForegroundService() {
+  try {
+    const { ForegroundService } = getPlugins();
+    if (!ForegroundService || typeof ForegroundService.stopForegroundService !== 'function') return;
+    await ForegroundService.stopForegroundService();
+  } catch (error) {
+    console.warn('[Fern] Could not stop the generation foreground service:', error);
   }
 }
 
@@ -766,8 +802,12 @@ function editUserMessage(index) {
   const message = session.messages[index];
   if (!message || message.role !== 'user') return;
 
+  stopActiveTypewriter();
+  generationAbortRequested = false;
   inputEl.value = message.content || '';
-  session.messages = session.messages.slice(0, index);
+  session.messages.splice(index);
+  if (index === 0) session.title = 'New chat';
+  renderSidebarSessions();
   renderSessionMessages();
   saveSessions();
   inputEl.dispatchEvent(new Event('input'));
@@ -989,7 +1029,7 @@ async function clearActiveModelName() {
 // ============================================================
 async function requestStartupPermissions() {
   try {
-    const { LocalNotifications, Device, Filesystem } = getPlugins();
+    const { LocalNotifications, Device, Filesystem, ForegroundService } = getPlugins();
 
     if (LocalNotifications) {
       try {
@@ -999,6 +1039,17 @@ async function requestStartupPermissions() {
         }
       } catch (error) {
         console.warn('Notification permission unavailable:', error);
+      }
+    }
+
+    if (ForegroundService) {
+      try {
+        const status = await ForegroundService.checkPermissions();
+        if (status.display !== 'granted') {
+          await ForegroundService.requestPermissions();
+        }
+      } catch (error) {
+        console.warn('Foreground service notification permission unavailable:', error);
       }
     }
 
@@ -1100,24 +1151,32 @@ function clampNumber(value, min, max, fallback) {
   return Math.min(max, Math.max(min, n));
 }
 
-async function getInstalledModels() {
+async function readInstalledModels() {
   const { Filesystem } = getPlugins();
   if (!Filesystem) return [];
   const result = await Filesystem.readdir({ path: '', directory: Directory.Data });
   const models = [];
   for (const file of result.files || []) {
-    if (file.type !== 'file' || !/\.gguf$/i.test(file.name)) continue;
+    if (file.type && file.type !== 'file') continue;
+    const name = String(file.name || file.path || '').split('/').pop();
+    if (!name || !/\.gguf$/i.test(name)) continue;
     let size = Number(file.size) || 0;
-    try {
-      const stat = await Filesystem.stat({ path: file.name, directory: Directory.Data });
-      size = Number(stat.size) || size;
-    } catch (error) {
-      console.warn('Could not stat ' + file.name + ':', error);
+    if (!size) {
+      try {
+        const stat = await Filesystem.stat({ path: name, directory: Directory.Data });
+        size = Number(stat.size) || 0;
+      } catch (error) {
+        console.warn('Could not stat ' + name + ':', error);
+      }
     }
-    models.push({ name: file.name, size });
+    models.push({ name, size });
   }
   models.sort((a, b) => a.name.localeCompare(b.name));
   return models;
+}
+
+async function getInstalledModels() {
+  return readInstalledModels();
 }
 
 function modelPowerBars(level) {
@@ -1173,9 +1232,10 @@ function renderModelList(models) {
   }).join('');
 }
 
-async function refreshModelManager() {
+async function renderModelManager() {
+  if (!modelList) return [];
   try {
-    const models = await getInstalledModels();
+    const models = await readInstalledModels();
     renderModelList(models);
     const total = models.reduce((sum, model) => sum + model.size, 0);
     if (settingsStorageTotal) settingsStorageTotal.innerText = formatBytes(total);
@@ -1187,6 +1247,10 @@ async function refreshModelManager() {
     if (settingsStorageTotal) settingsStorageTotal.innerText = 'Unavailable';
     return [];
   }
+}
+
+async function refreshModelManager() {
+  return renderModelManager();
 }
 
 async function updateStorageMeter() {
@@ -1252,7 +1316,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '3.1.4';
+  let version = '3.1.6';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -1289,6 +1353,9 @@ async function releaseLoadedModel() {
   contextReady = false;
   isGenerating = false;
   generationAbortRequested = false;
+  generationRunId++;
+  stopActiveTypewriter();
+  await stopGenerationForegroundService();
   updateSendButton();
   setSendEnabled(false);
   setMultimodalSupport(false);
@@ -1794,17 +1861,17 @@ async function pickAndLoadModel() {
     if (!Filesystem) {
       throw new Error('The Filesystem plugin is not installed.');
     }
+    if (!FilePicker) {
+      throw new Error('The FilePicker plugin is not installed.');
+    }
     const result = await FilePicker.pickFiles({
-      types: ['application/octet-stream'],
+      types: ['*/*', 'application/octet-stream'],
       limit: 1,
     });
-    const file = result.files && result.files[0];
-    if (!file) {
-      hideOverlay();
-      return;
-    }
-    if (!file.name || !/\.gguf$/i.test(file.name)) {
-      hideOverlay();
+    const file = result && result.files && result.files[0];
+    if (!file) return;
+    const filename = String(file.name || file.path || '').split('/').pop();
+    if (!filename || !/\.gguf$/i.test(filename)) {
       appendMessage('assistant', 'That file is not a .gguf model. Please select a .gguf file.');
       return;
     }
@@ -1819,40 +1886,40 @@ async function pickAndLoadModel() {
     // `toDirectory` (not `directory`) is required: `directory` applies to the
     // source too, which would make the plugin treat the content:// URI as a
     // relative path inside Directory.Data.
-    modelName = file.name;
-    modelDisplayName = file.name;
-    showOverlay('Importing ' + file.name + ' into private storage...');
+    modelName = filename;
+    modelDisplayName = filename;
+    showOverlay('Importing ' + filename + ' into private storage...');
     await Filesystem.copy({
       from: file.path,
-      to: file.name,
+      to: filename,
       toDirectory: Directory.Data,
     });
 
-    const uriResult = await Filesystem.getUri({ path: file.name, directory: Directory.Data });
+    const uriResult = await Filesystem.getUri({ path: filename, directory: Directory.Data });
     if (!uriResult || !uriResult.uri) throw new Error('Could not resolve the imported model path');
 
     // getUri returns a file:// URI, but the native llama.cpp engine opens the
     // model with fopen() and needs a raw absolute path.
     const rawPath = uriResult.uri.replace('file://', '');
 
-    const stat = await Filesystem.stat({ path: file.name, directory: Directory.Data });
-    console.log("File exists, size: " + stat.size);
+    const stat = await Filesystem.stat({ path: filename, directory: Directory.Data });
+    console.log('File exists, size: ' + stat.size);
 
-    showOverlay('Loading ' + file.name + ' (this can take a while)...');
+    showOverlay('Loading ' + filename + ' (this can take a while)...');
     await loadModelFile(rawPath, null, { exact: true });
-    await saveActiveModelName(file.name);
+    await saveActiveModelName(filename);
     await onModelReady();
     await refreshModelManager();
   } catch (error) {
     const message = String((error && error.message) || error || '');
     if ((error && error.fernCancelled) || /cancel/i.test(message)) {
-      hideOverlay();
       return;
     }
     console.error('Model load failed:', error);
-    hideOverlay();
     setSendEnabled(contextReady);
     reportModelLoadError(error);
+  } finally {
+    hideOverlay();
   }
 }
 
@@ -2016,7 +2083,7 @@ function lastAssistantBubble() {
 // ============================================================
 const FERN_SYSTEM_PROMPT = 'You are Fern, a helpful local AI.';
 const QWEN_STOP_TOKENS = ['<|im_end|>', '<|endoftext|>'];
-const GENERATION_TIMEOUT_MS = 60000;
+const GENERATION_TIMEOUT_MS = 180000;
 
 function buildChatMessages(history) {
   const systemPrompt = (customSystemPrompt && customSystemPrompt.trim()) || FERN_SYSTEM_PROMPT;
@@ -2152,21 +2219,71 @@ function persistAssistantMessage(text) {
   saveSessions();
 }
 
+function stopActiveTypewriter() {
+  if (!activeTypewriter) return;
+  const { timer, resolve } = activeTypewriter;
+  clearInterval(timer);
+  activeTypewriter = null;
+  if (typeof resolve === 'function') resolve();
+}
+
+// Fake streaming: when the native token callback never fires, reveal the
+// finished response word by word so the UI still feels responsive.
+function simulateTyping(element, text, shouldStop) {
+  stopActiveTypewriter();
+  return new Promise((resolve) => {
+    const words = String(text).match(/\S+\s*/g) || [String(text)];
+    let index = 0;
+    element.innerText = '';
+    const timer = setInterval(() => {
+      if (shouldStop() || index >= words.length) {
+        clearInterval(timer);
+        if (activeTypewriter && activeTypewriter.timer === timer) activeTypewriter = null;
+        resolve();
+        return;
+      }
+      element.innerText += words[index++];
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+    }, 30);
+    activeTypewriter = { timer, resolve, element, text };
+  });
+}
+
 async function stopGeneration() {
   if (!isGenerating) return;
   generationAbortRequested = true;
+  isGenerating = false;
+
+  // Restore the Send button immediately, before waiting on the native abort.
+  stopActiveTypewriter();
+  updateSendButton();
+  sendBtn.innerHTML = SEND_ICON_HTML;
+  sendBtn.setAttribute('aria-label', 'Send message');
+  stopGenerationForegroundService();
 
   try {
-    if (activeContext && typeof activeContext.stopCompletion === 'function') {
-      await activeContext.stopCompletion();
-      return;
-    }
-    const pro = llamaCppPro();
-    if (pro && typeof pro.stopCompletion === 'function') {
-      await pro.stopCompletion();
-      return;
-    }
     const native = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins[LlamaCppPluginName];
+    const pro = llamaCppPro();
+    const targets = [activeContext, pro];
+    const methodNames = ['stopCompletion', 'abort', 'cancel'];
+
+    for (const target of targets) {
+      if (!target) continue;
+      for (const methodName of methodNames) {
+        if (typeof target[methodName] !== 'function') continue;
+        try {
+          if (methodName === 'stopCompletion' && target.id != null && target === pro) {
+            await target.stopCompletion({ contextId: target.id });
+          } else {
+            await target[methodName]();
+          }
+          return;
+        } catch (error) {
+          console.warn('[Fern] ' + methodName + ' failed:', error);
+        }
+      }
+    }
+
     if (native && typeof native.stopCompletion === 'function' && activeContext && activeContext.id != null) {
       await native.stopCompletion({ contextId: activeContext.id });
     }
@@ -2177,6 +2294,9 @@ async function stopGeneration() {
 
 async function generateResponse(userPrompt) {
   if (!contextReady || isGenerating || !activeContext) return;
+
+  const runId = ++generationRunId;
+  const isCurrentRun = () => generationRunId === runId;
 
   appendMessage('user', userPrompt);
   inputEl.value = '';
@@ -2195,6 +2315,10 @@ async function generateResponse(userPrompt) {
   };
 
   const finalizeStopped = () => {
+    if (!isCurrentRun()) {
+      if (bubble && bubble.parentNode) bubble.remove();
+      return;
+    }
     const partial = bubbleText ? bubbleText.innerText : '';
     if (partial.trim()) {
       revealBubble(partial);
@@ -2224,24 +2348,27 @@ async function generateResponse(userPrompt) {
   let generationTimedOut = false;
   let timeoutId = null;
   updateSendButton();
+  await startGenerationForegroundService();
   await keepScreenAwake();
+
+  const isAborted = () => generationAbortRequested || !isCurrentRun();
 
   let streamed = false;
   try {
     await loadSettings();
-    if (generationAbortRequested) {
+    if (isAborted()) {
       finalizeStopped();
       return;
     }
 
     const prompt = await buildChatPrompt(activeMessages());
-    if (generationAbortRequested) {
+    if (isAborted()) {
       finalizeStopped();
       return;
     }
 
     timeoutId = setTimeout(() => {
-      if (!isGenerating || generationTimedOut) return;
+      if (!isGenerating || generationTimedOut || !isCurrentRun()) return;
       generationTimedOut = true;
       finalizeTimedOut();
       stopGeneration();
@@ -2249,7 +2376,7 @@ async function generateResponse(userPrompt) {
 
     const tokenCallback = (data) => {
       const tok = (data && (data.token || data.content || data.text)) || '';
-      if (!tok || generationTimedOut || generationAbortRequested) return;
+      if (!tok || generationTimedOut || isAborted()) return;
       streamed = true;
       revealBubble();
       bubbleText.innerText += tok;
@@ -2275,15 +2402,33 @@ async function generateResponse(userPrompt) {
       finalizeTimedOut();
       return;
     }
-    if (generationAbortRequested) {
+    if (isAborted()) {
       finalizeStopped();
       return;
     }
 
     const fullText = (result && (result.content || result.text)) || '';
     const finalText = fullText || (streamed ? bubbleText.innerText : '') || '[Empty response]';
-    revealBubble(finalText);
-    bubbleText.innerText = finalText;
+
+    if (!streamed && finalText !== '[Empty response]') {
+      // The native token callback never fired: simulate typing so the user
+      // still sees the response arrive progressively.
+      revealBubble();
+      await simulateTyping(bubbleText, finalText, () => generationTimedOut || isAborted());
+      if (generationTimedOut) {
+        finalizeTimedOut();
+        return;
+      }
+      if (isAborted()) {
+        finalizeStopped();
+        return;
+      }
+      bubbleText.innerText = finalText;
+    } else {
+      revealBubble(finalText);
+      bubbleText.innerText = finalText;
+    }
+
     persistAssistantMessage(finalText);
     notifyBackgroundResponse(finalText);
     chatContainer.scrollTop = chatContainer.scrollHeight;
@@ -2296,7 +2441,7 @@ async function generateResponse(userPrompt) {
       finalizeTimedOut();
       return;
     }
-    if (generationAbortRequested) {
+    if (isAborted()) {
       finalizeStopped();
       return;
     }
@@ -2311,12 +2456,16 @@ async function generateResponse(userPrompt) {
     }
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
-    await allowScreenSleep();
-    isGenerating = false;
-    generationAbortRequested = false;
-    updateSendButton();
-    sendBtn.innerHTML = SEND_ICON_HTML;
-    sendBtn.setAttribute('aria-label', 'Send message');
+    stopActiveTypewriter();
+    if (isCurrentRun()) {
+      await allowScreenSleep();
+      isGenerating = false;
+      generationAbortRequested = false;
+      updateSendButton();
+      sendBtn.innerHTML = SEND_ICON_HTML;
+      sendBtn.setAttribute('aria-label', 'Send message');
+      await stopGenerationForegroundService();
+    }
   }
 }
 

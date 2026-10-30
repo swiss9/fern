@@ -1514,7 +1514,7 @@ function scheduleSaveSettings(delay) {
 }
 
 async function updateAppVersion() {
-  let version = '3.2.2';
+  let version = '1.0.0';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -3406,6 +3406,24 @@ clearDataBtn.addEventListener('click', clearAppData);
 deleteAllModelsBtn.addEventListener('click', deleteAllModels);
 importChatBtn.addEventListener('click', importChat);
 exportChatBtn.addEventListener('click', exportActiveChat);
+
+// CRYPTO DONATION COPY BUTTONS
+document.querySelectorAll('.donate-copy-btn').forEach((button) => {
+  button.addEventListener('click', async () => {
+    const address = button.getAttribute('data-address');
+    if (!address) return;
+    const originalText = button.innerText;
+    try {
+      await navigator.clipboard.writeText(address);
+      button.innerText = 'COPIED!';
+      setTimeout(() => {
+        button.innerText = originalText;
+      }, 2000);
+    } catch (error) {
+      console.warn('Could not copy donation address:', error);
+    }
+  });
+});
 
 systemPromptInput.addEventListener('input', () => {
   customSystemPrompt = systemPromptInput.value;

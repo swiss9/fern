@@ -1561,7 +1561,7 @@ function scheduleSaveSettings(delay) {
 }
 
 async function updateAppVersion() {
-  let version = '1.0.4';
+  let version = '1.0.5';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -2803,10 +2803,9 @@ function formatPrompt(modelName, systemPrompt, history) {
   if (name.includes('llama')) {
     const turns = messages
       .filter((msg) => msg.role === 'user' || msg.role === 'assistant')
-      .map((msg) => '<|start_header_id|>' + msg.role + '<|end_header_id|>\n\n' + msg.content + '<|eot_id|>')
+      .map((msg) => `<|start_header_id|>${msg.role}<|end_header_id|>\n\n${msg.content}<|eot_id|>`)
       .join('');
-    return '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n' + system + '<|eot_id|>' +
-      turns + '<|start_header_id|>assistant<|end_header_id|>\n\n';
+    return `<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n${system}<|eot_id|>${turns}<|start_header_id|>assistant<|end_header_id|>\n\n`;
   }
 
   // Qwen / ChatML
@@ -3065,7 +3064,7 @@ async function generateResponse(userPrompt) {
     if (history.length !== activeMessages().length) {
       console.log('[Fern] trimmed chat context to ' + history.length + ' recent messages');
     }
-    const prompt = formatPrompt(modelName, systemPrompt, history);
+    const formattedPrompt = formatPrompt(modelName, systemPrompt, history);
     if (isAborted()) {
       finalizeStopped();
       return;
@@ -3087,11 +3086,18 @@ async function generateResponse(userPrompt) {
       scheduleAutoScroll();
     };
 
+    const isLlamaModel = String(modelName || '').toLowerCase().includes('llama');
+
+    console.log("RAW PROMPT:", formattedPrompt);
+
     const result = await activeContext.completion({
-      prompt,
+      prompt: formattedPrompt,
       messages: null,
-      n_predict: appSettings.maxTokens,
-      temperature: appSettings.temperature,
+      chatTemplate: null,
+      chat_template: null,
+      applyTemplate: false,
+      n_predict: isLlamaModel ? 256 : appSettings.maxTokens,
+      temperature: isLlamaModel ? 0.3 : appSettings.temperature,
       top_k: 40,
       penalty_repeat: appSettings.repeatPenalty,
       repeat_penalty: 1.15,

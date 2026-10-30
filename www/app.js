@@ -119,6 +119,7 @@ const getPlugins = () => {
     KeepAwake: window.Capacitor.Plugins.KeepAwake,
     Share: window.Capacitor.Plugins.Share,
     ForegroundService: window.Capacitor.Plugins.ForegroundService,
+    App: window.Capacitor.Plugins.App,
   };
 };
 
@@ -206,6 +207,13 @@ const LEGACY_CHAT_HISTORY_KEY = 'chatHistory';
 const ACTIVE_MODEL_KEY = 'activeModelName';
 const MODEL_ALIASES_KEY = 'fern.modelAliases';
 const DEFAULT_SETTINGS = { temperature: 0.6, maxTokens: 512, repeatPenalty: 1.15 };
+const MAX_SESSION_MESSAGES = 50;
+const CONTEXT_TOKEN_LIMIT = 2048;
+const HISTORY_TOKEN_BUDGET = 1500;
+const CHARS_PER_TOKEN = 4;
+const MIN_RECENT_MESSAGES = 6;
+const MAX_RECENT_MESSAGES = 8;
+const AUTO_SCROLL_THRESHOLD = 120;
 let activeDownloadCancel = null;
 
 const MODEL_CATALOG = [
@@ -262,6 +270,9 @@ let activeContext = null;
 let chatSaveChain = Promise.resolve();
 let aliasTargetModel = '';
 let confirmResolve = null;
+let settingsSaveTimer = null;
+let systemPromptSaveTimer = null;
+let scrollFramePending = false;
 
 function hideSplash() {
   if (!splashOverlay) return;
@@ -483,6 +494,46 @@ function formatBytes(bytes) {
   return mb.toFixed(mb >= 100 ? 0 : 1) + ' MB';
 }
 
+function parseSizeLabelToBytes(label) {
+  const match = String(label || '').match(/([\d.]+)\s*(GB|MB|KB)/i);
+  if (!match) return 0;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  const unit = match[2].toUpperCase();
+  if (unit === 'GB') return Math.round(value * 1073741824);
+  if (unit === 'MB') return Math.round(value * 1048576);
+  return Math.round(value * 1024);
+}
+
+function getCatalogModelBytes(filename) {
+  const entry = MODEL_CATALOG.find((model) => model.file === filename);
+  return entry ? parseSizeLabelToBytes(entry.size) : 0;
+}
+
+async function getFreeDiskSpace() {
+  try {
+    const { Device } = getPlugins();
+    if (Device) {
+      const info = await Device.getInfo();
+      const free = Number(info && (info.realDiskFree || info.diskFree)) || 0;
+      if (free > 0) return free;
+    }
+  } catch (error) {
+    console.warn('[Fern] Could not read free disk space:', error);
+  }
+  try {
+    if (navigator.storage && typeof navigator.storage.estimate === 'function') {
+      const estimate = await navigator.storage.estimate();
+      const quota = Number(estimate && estimate.quota) || 0;
+      const usage = Number(estimate && estimate.usage) || 0;
+      if (quota > usage) return quota - usage;
+    }
+  } catch (error) {
+    console.warn('[Fern] Storage estimate unavailable:', error);
+  }
+  return 0;
+}
+
 function getPreferencesPlugin() {
   try {
     return getPlugins().Preferences;
@@ -644,6 +695,13 @@ async function saveAliasFromModal() {
   await refreshModelManager();
 }
 
+function capSessionMessages(session) {
+  if (!session || !Array.isArray(session.messages)) return;
+  if (session.messages.length > MAX_SESSION_MESSAGES) {
+    session.messages = session.messages.slice(-MAX_SESSION_MESSAGES);
+  }
+}
+
 function normalizeMessageList(list) {
   return (Array.isArray(list) ? list : [])
     .filter((message) => {
@@ -667,18 +725,22 @@ function normalizeSessionsData(parsed) {
     if (!Array.isArray(list)) return;
     result[model] = list
       .filter((session) => session && typeof session === 'object')
-      .map((session, index) => ({
-        id: typeof session.id === 'string' && session.id
-          ? session.id
-          : 's_' + Date.now().toString(36) + '_' + index,
-        title: typeof session.title === 'string' && session.title.trim()
-          ? session.title.trim()
-          : 'New chat',
-        model: typeof session.model === 'string' && session.model
-          ? session.model
-          : model,
-        messages: normalizeMessageList(session.messages),
-      }));
+      .map((session, index) => {
+        const normalized = {
+          id: typeof session.id === 'string' && session.id
+            ? session.id
+            : 's_' + Date.now().toString(36) + '_' + index,
+          title: typeof session.title === 'string' && session.title.trim()
+            ? session.title.trim()
+            : 'New chat',
+          model: typeof session.model === 'string' && session.model
+            ? session.model
+            : model,
+          messages: normalizeMessageList(session.messages),
+        };
+        capSessionMessages(normalized);
+        return normalized;
+      });
   });
 
   return result;
@@ -710,7 +772,7 @@ function ensureModelSessions(name) {
 }
 
 function createSessionRecord(title, messages) {
-  return {
+  const record = {
     id: createSessionId(),
     title: title || 'New chat',
     // Snapshot the owning model (raw filename) so a sidebar entry always knows
@@ -718,6 +780,8 @@ function createSessionRecord(title, messages) {
     model: modelName || '',
     messages: normalizeMessageList(messages),
   };
+  capSessionMessages(record);
+  return record;
 }
 
 // Map a session id back to the model (raw filename) that owns it. Uses the
@@ -828,6 +892,22 @@ async function deleteSession(id) {
   await saveSessions();
 }
 
+function isNearChatBottom() {
+  if (!chatContainer) return false;
+  return chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight <= AUTO_SCROLL_THRESHOLD;
+}
+
+function scheduleAutoScroll(force) {
+  if (!chatContainer) return;
+  if (!force && !isNearChatBottom()) return;
+  if (scrollFramePending) return;
+  scrollFramePending = true;
+  requestAnimationFrame(() => {
+    scrollFramePending = false;
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+  });
+}
+
 function renderSessionMessages() {
   messagesEl.innerHTML = '';
   const messages = activeMessages();
@@ -839,7 +919,7 @@ function renderSessionMessages() {
   messages.forEach((message, index) => {
     appendMessage(message.role, message.content, { persist: false, index });
   });
-  chatContainer.scrollTop = chatContainer.scrollHeight;
+  scheduleAutoScroll(true);
 }
 
 function editUserMessage(index) {
@@ -1229,6 +1309,26 @@ async function getInstalledModels() {
   return readInstalledModels();
 }
 
+async function cleanupPartialDownloads() {
+  try {
+    const { Filesystem } = getPlugins();
+    if (!Filesystem) return;
+    const result = await Filesystem.readdir({ path: '', directory: Directory.Data });
+    for (const file of result.files || []) {
+      const name = String(file.name || file.path || '').split('/').pop();
+      if (!name || !/\.tmp$/i.test(name)) continue;
+      try {
+        await Filesystem.deleteFile({ path: name, directory: Directory.Data });
+        console.log('[Fern] Removed partial download ' + name);
+      } catch (error) {
+        console.warn('[Fern] Could not remove partial download ' + name + ':', error);
+      }
+    }
+  } catch (error) {
+    console.warn('[Fern] Partial download cleanup failed:', error);
+  }
+}
+
 function modelPowerBars(level) {
   let bars = '';
   for (let i = 0; i < 4; i++) {
@@ -1385,7 +1485,7 @@ async function loadSettings() {
       if (value) {
         const parsed = JSON.parse(value);
         appSettings.temperature = clampNumber(parsed.temperature, 0, 1, DEFAULT_SETTINGS.temperature);
-        appSettings.maxTokens = Math.round(clampNumber(parsed.maxTokens, 128, 2048, DEFAULT_SETTINGS.maxTokens));
+        appSettings.maxTokens = Math.round(clampNumber(parsed.maxTokens, 128, 1024, DEFAULT_SETTINGS.maxTokens));
         appSettings.repeatPenalty = clampNumber(parsed.repeatPenalty, 1, 2, DEFAULT_SETTINGS.repeatPenalty);
       }
     }
@@ -1405,8 +1505,16 @@ async function saveSettings() {
   }
 }
 
+function scheduleSaveSettings(delay) {
+  clearTimeout(settingsSaveTimer);
+  settingsSaveTimer = setTimeout(() => {
+    settingsSaveTimer = null;
+    saveSettings();
+  }, delay == null ? 500 : delay);
+}
+
 async function updateAppVersion() {
-  let version = '3.2.0';
+  let version = '3.2.2';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -1421,8 +1529,8 @@ async function updateAppVersion() {
 async function openSettings() {
   settingsModal.classList.remove('hidden');
   settingsModal.style.display = 'flex';
+  applySettingsToControls();
   await Promise.all([
-    loadSettings(),
     refreshModelManager(),
     updateStorageLocation(),
     updateAppVersion(),
@@ -1432,6 +1540,48 @@ async function openSettings() {
 
 function closeSettings() {
   settingsModal.style.display = 'none';
+}
+
+function closeSidebar() {
+  const navToggle = document.getElementById('nav-toggle');
+  if (navToggle) navToggle.checked = false;
+}
+
+async function setupBackButtonHandler() {
+  try {
+    const { App } = getPlugins();
+    if (!App || typeof App.addListener !== 'function') return;
+    await App.addListener('backButton', () => {
+      if (settingsModal && settingsModal.style.display === 'flex') {
+        closeSettings();
+        return;
+      }
+      const navToggle = document.getElementById('nav-toggle');
+      if (navToggle && navToggle.checked) {
+        closeSidebar();
+        return;
+      }
+      if (quickSettingsSheet && quickSettingsSheet.style.display === 'flex') {
+        closeQuickSettings();
+        return;
+      }
+      if (aliasModal && aliasModal.style.display === 'flex') {
+        closeAliasModal();
+        return;
+      }
+      if (confirmModal && confirmModal.style.display === 'flex') {
+        resolveConfirm(false);
+        return;
+      }
+      if (ramWarningOverlay && ramWarningOverlay.style.display === 'flex') {
+        resolveRamWarning(false);
+        return;
+      }
+      if (typeof App.exitApp === 'function') App.exitApp();
+    });
+  } catch (error) {
+    console.warn('[Fern] Could not register the back button handler:', error);
+  }
 }
 
 // Belt-and-braces teardown: drops every context the engine still holds so a
@@ -1501,6 +1651,15 @@ async function deleteModel(filename) {
     danger: true,
   });
   if (!confirmed) return;
+
+  const deleteChats = await showConfirm({
+    title: 'Delete chat histories?',
+    description: 'Do you want to also delete all chat histories for this model?',
+    cancelText: 'Keep chats',
+    confirmText: 'Delete chats',
+    danger: true,
+  });
+
   const { Filesystem } = getPlugins();
   const deletingActive = modelName === filename;
 
@@ -1512,6 +1671,15 @@ async function deleteModel(filename) {
     console.error('Could not delete model:', error);
     showErrorOverlay('Delete failed', error && error.message ? error.message : String(error));
     return;
+  }
+
+  if (deleteChats) {
+    const sessionKey = sessionKeyForModel(filename);
+    if (sessionKey) delete sessions[sessionKey];
+    delete sessions[filename];
+    delete modelAliases[filename];
+    await saveModelAliases();
+    await saveSessions();
   }
 
   if (deletingActive) {
@@ -1572,6 +1740,45 @@ async function deleteAllModels() {
   await clearDownloadNotification();
 }
 
+async function clearAllFernPreferences() {
+  const Preferences = getPreferencesPlugin();
+  if (!Preferences) return;
+
+  const shouldRemove = (key) => {
+    const value = String(key || '');
+    return value.startsWith('fern.') ||
+      value === ACTIVE_MODEL_KEY ||
+      value === LEGACY_CHAT_HISTORY_KEY ||
+      value.startsWith('systemPrompt_');
+  };
+
+  try {
+    if (typeof Preferences.keys === 'function') {
+      const { keys } = await Preferences.keys();
+      for (const key of keys || []) {
+        if (!shouldRemove(key)) continue;
+        try {
+          await Preferences.remove({ key });
+        } catch (error) {
+          console.warn('[Fern] Could not remove ' + key + ':', error);
+        }
+      }
+      return;
+    }
+  } catch (error) {
+    console.warn('[Fern] Could not enumerate preferences:', error);
+  }
+
+  const fallbackKeys = [SETTINGS_KEY, SESSIONS_KEY, MODEL_ALIASES_KEY, ACTIVE_MODEL_KEY, LEGACY_CHAT_HISTORY_KEY];
+  for (const key of fallbackKeys) {
+    try {
+      await Preferences.remove({ key });
+    } catch (error) {
+      console.warn('[Fern] Could not remove ' + key + ':', error);
+    }
+  }
+}
+
 async function clearAppData() {
   const confirmed = await showConfirm({
     title: 'Clear app data',
@@ -1583,6 +1790,7 @@ async function clearAppData() {
 
   try {
     await releaseLoadedModel();
+    await chatSaveChain;
 
     const { Filesystem } = getPlugins();
     if (Filesystem) {
@@ -1596,25 +1804,32 @@ async function clearAppData() {
       }
     }
 
-    modelName = '';
-    modelDisplayName = '';
-    activeSessionId = '';
-    customSystemPrompt = '';
+    clearTimeout(settingsSaveTimer);
+    settingsSaveTimer = null;
+    clearTimeout(systemPromptSaveTimer);
+    systemPromptSaveTimer = null;
+
+    await clearAllFernPreferences();
+
+    appSettings = { ...DEFAULT_SETTINGS };
+    modelAliases = {};
     sessions = {};
     pendingLegacyMessages = null;
-    messagesEl.innerHTML = '';
-    setModelLabels('');
+    customSystemPrompt = '';
+    activeDownloadCancel = null;
+    chatSaveChain = Promise.resolve();
+
+    applySettingsToControls();
+    resetToNoModelState();
     updatePersonalizationControls();
     renderSidebarSessions();
-    await saveSessions();
-    await clearLegacyChatHistory();
-    await clearActiveModelName();
+    setAdvancedSettingsExpanded(false);
     await clearDownloadNotification();
     await refreshModelManager();
     await updateStorageLocation();
-    showEmptyState();
-    setEmptyStateMessage('No local model loaded.');
     closeSettings();
+    closeQuickSettings();
+    hideOverlay();
   } catch (error) {
     console.error('Clear app data failed:', error);
     showErrorOverlay('Clear failed', error && error.message ? error.message : String(error));
@@ -1983,6 +2198,16 @@ async function downloadAndLoadModel(url, filename) {
 
   if (!FileTransfer) {
     showErrorOverlay('FileTransfer unavailable', 'The FileTransfer plugin is not installed.');
+    return;
+  }
+
+  const requiredBytes = getCatalogModelBytes(filename);
+  const freeBytes = await getFreeDiskSpace();
+  if (requiredBytes > 0 && freeBytes > 0 && freeBytes < requiredBytes + 67108864) {
+    showErrorOverlay(
+      'Not enough storage',
+      'This model needs about ' + formatBytes(requiredBytes) + ' but only ' + formatBytes(freeBytes) + ' is free.'
+    );
     return;
   }
 
@@ -2407,6 +2632,7 @@ function appendMessage(role, content, options) {
     }
     if (session) {
       session.messages.push({ role, content });
+      capSessionMessages(session);
       if (role === 'user') {
         updateActiveSessionTitle(content);
         editIndex = session.messages.length - 1;
@@ -2450,7 +2676,7 @@ function appendMessage(role, content, options) {
 
   messagesEl.appendChild(div);
   hideEmptyState();
-  chatContainer.scrollTop = chatContainer.scrollHeight;
+  scheduleAutoScroll();
   return div;
 }
 
@@ -2473,6 +2699,44 @@ function getStopTokens(modelName) {
   if (name.includes('phi')) return ['<|end|>', '<|user|>', '<|assistant|>'];
   if (name.includes('mistral')) return ['</s>'];
   return ['</s>', '<|endoftext|>'];
+}
+
+function approxTokensForText(text) {
+  return Math.ceil(String(text || '').length / CHARS_PER_TOKEN);
+}
+
+function approxTokensForMessages(messages) {
+  return (messages || []).reduce((sum, message) => sum + approxTokensForText(message && message.content) + 4, 0);
+}
+
+function trimHistoryForContext(history, systemPrompt) {
+  const list = (Array.isArray(history) ? history : [])
+    .filter((message) => message && message.role && typeof message.content === 'string')
+    .map((message) => ({ role: message.role, content: message.content }));
+
+  const systemTokens = approxTokensForText(systemPrompt) + 4;
+  if (systemTokens + approxTokensForMessages(list) <= HISTORY_TOKEN_BUDGET) return list;
+
+  const minimumRecent = Math.min(list.length, MIN_RECENT_MESSAGES);
+  const keepRecent = Math.min(list.length, MAX_RECENT_MESSAGES);
+  const trimmed = list.slice(list.length - keepRecent);
+  let tokens = systemTokens + approxTokensForMessages(trimmed);
+
+  while (trimmed.length > minimumRecent && tokens > HISTORY_TOKEN_BUDGET) {
+    tokens -= approxTokensForText(trimmed[0].content) + 4;
+    trimmed.shift();
+  }
+
+  while (trimmed.length > 1 && systemTokens + approxTokensForMessages(trimmed) > CONTEXT_TOKEN_LIMIT) {
+    trimmed.shift();
+  }
+
+  if (trimmed.length === 1 && systemTokens + approxTokensForMessages(trimmed) > CONTEXT_TOKEN_LIMIT) {
+    const availableChars = Math.max(0, (CONTEXT_TOKEN_LIMIT - systemTokens - 4) * CHARS_PER_TOKEN);
+    trimmed[0].content = trimmed[0].content.slice(-availableChars);
+  }
+
+  return trimmed;
 }
 
 function buildChatMessages(history) {
@@ -2570,7 +2834,12 @@ function fallbackChatTemplate(messages) {
 }
 
 async function buildChatPrompt(history) {
-  const messages = buildChatMessages(history);
+  const systemPrompt = (customSystemPrompt && customSystemPrompt.trim()) || FERN_SYSTEM_PROMPT;
+  const trimmedHistory = trimHistoryForContext(history, systemPrompt);
+  if (trimmedHistory.length !== (Array.isArray(history) ? history.length : 0)) {
+    console.log('[Fern] trimmed chat context to ' + trimmedHistory.length + ' recent messages');
+  }
+  const messages = buildChatMessages(trimmedHistory);
   const nativePrompt = await formatPromptWithNative(messages);
   if (nativePrompt) return nativePrompt;
   console.log('[Fern] native chat template unavailable; using filename fallback for ' + (modelName || 'unknown model'));
@@ -2598,7 +2867,7 @@ function showTypingIndicator() {
 
   messagesEl.appendChild(div);
   hideEmptyState();
-  chatContainer.scrollTop = chatContainer.scrollHeight;
+  scheduleAutoScroll();
   return div;
 }
 
@@ -2606,6 +2875,7 @@ function persistAssistantMessage(text) {
   const session = getActiveSession();
   if (!session) return;
   session.messages.push({ role: 'assistant', content: text });
+  capSessionMessages(session);
   saveSessions();
 }
 
@@ -2637,7 +2907,7 @@ function simulateTyping(element, text, shouldStop) {
         return;
       }
       element.innerText += words[index++];
-      chatContainer.scrollTop = chatContainer.scrollHeight;
+      scheduleAutoScroll();
     }, 30);
     activeTypewriterInterval = timer;
     activeTypewriter = { timer, resolve, element, text };
@@ -2647,16 +2917,11 @@ function simulateTyping(element, text, shouldStop) {
 async function stopGeneration() {
   if (!isGenerating) return;
   generationAbortRequested = true;
-  isGenerating = false;
   setModelControlsLocked(false);
 
-  // Restore the Send button immediately, before waiting on the native abort.
   clearInterval(activeTypewriterInterval);
   activeTypewriterInterval = null;
   stopActiveTypewriter();
-  updateSendButton();
-  sendBtn.innerHTML = SEND_ICON_HTML;
-  sendBtn.setAttribute('aria-label', 'Send message');
   stopGenerationForegroundService();
 
   try {
@@ -2687,6 +2952,12 @@ async function stopGeneration() {
     }
   } catch (error) {
     console.warn('[Fern] stopGeneration failed:', error);
+  } finally {
+    isGenerating = false;
+    generationAbortRequested = false;
+    updateSendButton();
+    sendBtn.innerHTML = SEND_ICON_HTML;
+    sendBtn.setAttribute('aria-label', 'Send message');
   }
 }
 
@@ -2724,7 +2995,7 @@ async function generateResponse(userPrompt) {
     } else if (bubble && bubble.parentNode) {
       bubble.remove();
     }
-    chatContainer.scrollTop = chatContainer.scrollHeight;
+    scheduleAutoScroll();
   };
 
   let timeoutFinalized = false;
@@ -2738,7 +3009,7 @@ async function generateResponse(userPrompt) {
     revealBubble(timeoutText);
     persistAssistantMessage(timeoutText);
     notifyBackgroundResponse(timeoutText);
-    chatContainer.scrollTop = chatContainer.scrollHeight;
+    scheduleAutoScroll();
   };
 
   isGenerating = true;
@@ -2754,7 +3025,6 @@ async function generateResponse(userPrompt) {
 
   let streamed = false;
   try {
-    await loadSettings();
     if (isAborted()) {
       finalizeStopped();
       return;
@@ -2779,12 +3049,12 @@ async function generateResponse(userPrompt) {
       streamed = true;
       revealBubble();
       bubbleText.innerText += tok;
-      chatContainer.scrollTop = chatContainer.scrollHeight;
+      scheduleAutoScroll();
     };
 
     const result = await activeContext.completion({
       prompt,
-      n_predict: Math.min(appSettings.maxTokens, 512),
+      n_predict: appSettings.maxTokens,
       temperature: appSettings.temperature,
       top_k: 40,
       penalty_repeat: appSettings.repeatPenalty,
@@ -2830,7 +3100,7 @@ async function generateResponse(userPrompt) {
 
     persistAssistantMessage(finalText);
     notifyBackgroundResponse(finalText);
-    chatContainer.scrollTop = chatContainer.scrollHeight;
+    scheduleAutoScroll();
   } catch (error) {
     if (timeoutId) {
       clearTimeout(timeoutId);
@@ -2858,13 +3128,15 @@ async function generateResponse(userPrompt) {
     stopActiveTypewriter();
     if (isCurrentRun()) {
       await allowScreenSleep();
-      isGenerating = false;
-      setModelControlsLocked(false);
-      generationAbortRequested = false;
-      updateSendButton();
-      sendBtn.innerHTML = SEND_ICON_HTML;
-      sendBtn.setAttribute('aria-label', 'Send message');
-      await stopGenerationForegroundService();
+      if (!generationAbortRequested) {
+        isGenerating = false;
+        setModelControlsLocked(false);
+        generationAbortRequested = false;
+        updateSendButton();
+        sendBtn.innerHTML = SEND_ICON_HTML;
+        sendBtn.setAttribute('aria-label', 'Send message');
+        await stopGenerationForegroundService();
+      }
     }
   }
 }
@@ -3018,6 +3290,7 @@ async function importChat() {
       model: modelName,
       messages: imported.messages,
     };
+    capSessionMessages(session);
 
     await loadModelAliases();
     syncModelDisplayName();
@@ -3134,7 +3407,6 @@ deleteAllModelsBtn.addEventListener('click', deleteAllModels);
 importChatBtn.addEventListener('click', importChat);
 exportChatBtn.addEventListener('click', exportActiveChat);
 
-let systemPromptSaveTimer = null;
 systemPromptInput.addEventListener('input', () => {
   customSystemPrompt = systemPromptInput.value;
   if (!modelName) return;
@@ -3186,19 +3458,19 @@ advancedSettingsToggle.addEventListener('click', () => {
 temperatureSlider.addEventListener('input', () => {
   appSettings.temperature = clampNumber(temperatureSlider.value, 0, 1, DEFAULT_SETTINGS.temperature);
   temperatureValue.innerText = appSettings.temperature.toFixed(1);
-  saveSettings();
+  scheduleSaveSettings(500);
 });
 
 maxTokensSlider.addEventListener('input', () => {
-  appSettings.maxTokens = Math.round(clampNumber(maxTokensSlider.value, 128, 2048, DEFAULT_SETTINGS.maxTokens));
+  appSettings.maxTokens = Math.round(clampNumber(maxTokensSlider.value, 128, 1024, DEFAULT_SETTINGS.maxTokens));
   maxTokensValue.innerText = String(appSettings.maxTokens);
-  saveSettings();
+  scheduleSaveSettings(500);
 });
 
 repeatPenaltySlider.addEventListener('input', () => {
   appSettings.repeatPenalty = clampNumber(repeatPenaltySlider.value, 1, 2, DEFAULT_SETTINGS.repeatPenalty);
   repeatPenaltyValue.innerText = appSettings.repeatPenalty.toFixed(2);
-  saveSettings();
+  scheduleSaveSettings(500);
 });
 
 modelList.addEventListener('click', (event) => {
@@ -3271,6 +3543,7 @@ chatNav.addEventListener('click', (event) => {
   }
   const sessionButton = event.target.closest('[data-session-id]');
   if (sessionButton) {
+    closeSidebar();
     selectSession(sessionButton.getAttribute('data-session-id')).catch((error) => {
       console.error('Session select failed:', error);
     });
@@ -3287,6 +3560,7 @@ ramWarningCancelBtn.addEventListener('click', () => resolveRamWarning(false));
 
 // NEW CHAT
 newChatBtn.addEventListener('click', () => {
+  closeSidebar();
   if (!modelName) {
     showErrorOverlay('No model loaded', 'Load a model before starting a new chat.');
     return;
@@ -3308,7 +3582,9 @@ async function initApp() {
 
     updateAppVersion();
     requestStartupPermissions();
+    setupBackButtonHandler();
     updateStorageLocation();
+    await cleanupPartialDownloads();
 
     // 1. Restore generation settings and model aliases.
     await loadSettings();

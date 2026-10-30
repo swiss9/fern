@@ -7,34 +7,9 @@
 
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80'%3E%3Crect width='80' height='80' fill='%2309090b'/%3E%3Cpath fill='%23ffffff' fill-rule='evenodd' clip-rule='evenodd' d='M40 3L70 25L60 55L40 77L20 55L10 25Z M40 12L18 27L35 43L22 39L40 61L58 39L45 43L62 27Z'/%3E%3C/svg%3E" />
 
-<link rel="preconnect" href="https://cdn.jsdelivr.net" />
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter/400.css" />
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter/500.css" />
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter/600.css" />
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter/700.css" />
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono/400.css" />
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono/500.css" />
-
-<script src="https://cdn.tailwindcss.com"></script>
-<script>
-  tailwind.config = {
-    theme: {
-      extend: {
-        colors: {
-          base:   '#09090b',
-          panel:  '#18181b',
-          line:   '#27272a',
-          ink:    '#ffffff',
-          muted:  '#a1a1aa',
-        },
-        fontFamily: {
-          sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-          mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
-        },
-      }
-    }
-  }
-</script>
+<!-- Local fonts (woff2 from @fontsource) + locally built Tailwind — fully offline. -->
+<link href="fonts.css" rel="stylesheet" />
+<link href="styles.css" rel="stylesheet" />
 
 <style>
   html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
@@ -96,6 +71,14 @@
 
   .quick-sheet-panel {
     animation: sheet-up 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* Model controls are locked while a model loads or generation runs */
+  .model-controls-locked [data-load-model],
+  .model-controls-locked [data-model-id] {
+    opacity: 0.5;
+    pointer-events: none;
+    cursor: not-allowed;
   }
 </style>
 
@@ -242,7 +225,7 @@
           <h3 class="text-[13px] font-semibold tracking-tight text-white">About</h3>
           <div class="mt-3 flex items-center justify-between">
             <span class="font-mono text-[10.5px] uppercase tracking-[0.1em] text-zinc-500">Version</span>
-            <span id="app-version" class="font-mono text-[12px] text-zinc-300">3.2.0</span>
+            <span id="app-version" class="font-mono text-[12px] text-zinc-300">3.2.1</span>
           </div>
           <a href="https://github.com/swiss9/fern" target="_blank" rel="noopener noreferrer"
              class="mt-3 flex h-9 w-full items-center justify-center rounded-md border border-line bg-base font-mono text-[11.5px] text-zinc-300 transition hover:border-zinc-600 hover:text-white">
@@ -422,7 +405,7 @@
     </header>
 
     <!-- Chat scroll area -->
-    <div id="chat-container" class="scroll-thin relative min-h-0 flex-1 overflow-y-auto">
+    <div id="chat-container" class="scroll-thin relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
       <div class="grid-fade pointer-events-none absolute inset-x-0 top-0 h-56"></div>
       <div id="empty-state" class="flex flex-col items-center justify-center h-full text-center space-y-4">
         <div id="empty-state-text" class="text-zinc-500 text-sm font-mono">No local model loaded.</div>

@@ -248,6 +248,8 @@ let isGenerating = false;
 let generationAbortRequested = false;
 let generationRunId = 0;
 let activeTypewriter = null;
+let activeTypewriterInterval = null;
+let isModelLoading = false;
 let sessions = {};
 let activeSessionId = '';
 let chatSearchQuery = '';
@@ -411,6 +413,17 @@ function setSendEnabled(enabled) {
     sendBtn.classList.remove('opacity-50', 'cursor-not-allowed');
   } else {
     sendBtn.classList.add('opacity-50', 'cursor-not-allowed');
+  }
+}
+
+// Gray out every model selector/manager row while a model is loading or the
+// engine is generating, so a stray double tap cannot start a second load or
+// yank the context mid-completion.
+function setModelControlsLocked(locked) {
+  if (locked) {
+    document.body.classList.add('model-controls-locked');
+  } else {
+    document.body.classList.remove('model-controls-locked');
   }
 }
 
@@ -766,6 +779,9 @@ function updateActiveSessionTitle(text) {
 
 async function selectSession(id) {
   if (!id) return;
+  clearInterval(activeTypewriterInterval);
+  activeTypewriterInterval = null;
+  stopActiveTypewriter();
   const currentList = modelName ? ensureModelSessions(modelName) : [];
   if (currentList.some((session) => session.id === id)) {
     activeSessionId = id;
@@ -1465,8 +1481,11 @@ async function releaseLoadedModel() {
   await unloadActiveContext();
   contextReady = false;
   isGenerating = false;
+  setModelControlsLocked(false);
   generationAbortRequested = false;
   generationRunId++;
+  clearInterval(activeTypewriterInterval);
+  activeTypewriterInterval = null;
   stopActiveTypewriter();
   await stopGenerationForegroundService();
   updateSendButton();
@@ -1709,6 +1728,27 @@ async function runMemoryPreflight(modelPath) {
 }
 
 async function loadModelFile(modelPath, notify, options) {
+  // Double-tap / model-switch-while-loading guard: only one load may run at a
+  // time. Mark the rejection as a non-error user no-op so the caller does not
+  // report a scary failure for an extra tap.
+  if (isModelLoading) {
+    const busyError = new Error('A model load is already in progress.');
+    busyError.fernCancelled = true;
+    throw busyError;
+  }
+  isModelLoading = true;
+  setModelControlsLocked(true);
+  clearInterval(activeTypewriterInterval);
+  activeTypewriterInterval = null;
+  try {
+    await runModelLoad(modelPath, notify, options);
+  } finally {
+    isModelLoading = false;
+    setModelControlsLocked(false);
+  }
+}
+
+async function runModelLoad(modelPath, notify, options) {
   const exactPath = !!(options && options.exact);
   const pro = llamaCppPro();
   if (!pro) {
@@ -2393,7 +2433,7 @@ function appendMessage(role, content, options) {
         '<span class="font-mono text-[10px] uppercase tracking-[0.12em] text-zinc-600">You</span>' +
       '</div>' +
       '<div class="max-w-[85%] rounded-lg rounded-br-sm border border-white/[0.04] bg-line px-3.5 py-2.5 sm:max-w-[75%]">' +
-        '<p class="font-mono text-[13.5px] leading-[1.65] text-white whitespace-pre-wrap">' + escapeHtml(content) + '</p>' +
+        '<p class="break-words [overflow-wrap:anywhere] min-w-0 font-mono text-[13.5px] leading-[1.65] text-white whitespace-pre-wrap">' + escapeHtml(content) + '</p>' +
       '</div>';
   } else {
     div.innerHTML =
@@ -2402,7 +2442,7 @@ function appendMessage(role, content, options) {
         '<div class="mb-1.5 flex items-center gap-2">' +
           '<span class="text-[12px] font-semibold tracking-tight text-white">' + escapeHtml(displayName) + '</span>' +
         '</div>' +
-        '<p class="font-mono text-[13.5px] leading-[1.75] text-white whitespace-pre-wrap"></p>' +
+        '<p class="break-words [overflow-wrap:anywhere] min-w-0 font-mono text-[13.5px] leading-[1.75] text-white whitespace-pre-wrap"></p>' +
       '</div>';
 
     if (content) div.querySelector('p').innerText = content;
@@ -2548,7 +2588,7 @@ function showTypingIndicator() {
       '<div class="mb-1.5 flex items-center gap-2">' +
         '<span class="text-[12px] font-semibold tracking-tight text-white">' + escapeHtml(modelDisplayName || modelName || 'Local model') + '</span>' +
       '</div>' +
-      '<p class="font-mono text-[13.5px] leading-[1.75] text-white whitespace-pre-wrap"></p>' +
+      '<p class="break-words [overflow-wrap:anywhere] min-w-0 font-mono text-[13.5px] leading-[1.75] text-white whitespace-pre-wrap"></p>' +
       '<div data-typing-dots class="flex h-6 items-center gap-1.5">' +
         '<span class="typing-dot"></span>' +
         '<span class="typing-dot"></span>' +
@@ -2570,6 +2610,8 @@ function persistAssistantMessage(text) {
 }
 
 function stopActiveTypewriter() {
+  clearInterval(activeTypewriterInterval);
+  activeTypewriterInterval = null;
   if (!activeTypewriter) return;
   const { timer, resolve } = activeTypewriter;
   clearInterval(timer);
@@ -2585,9 +2627,11 @@ function simulateTyping(element, text, shouldStop) {
     const words = String(text).match(/\S+\s*/g) || [String(text)];
     let index = 0;
     element.innerText = '';
+    clearInterval(activeTypewriterInterval);
     const timer = setInterval(() => {
       if (shouldStop() || index >= words.length) {
         clearInterval(timer);
+        if (activeTypewriterInterval === timer) activeTypewriterInterval = null;
         if (activeTypewriter && activeTypewriter.timer === timer) activeTypewriter = null;
         resolve();
         return;
@@ -2595,6 +2639,7 @@ function simulateTyping(element, text, shouldStop) {
       element.innerText += words[index++];
       chatContainer.scrollTop = chatContainer.scrollHeight;
     }, 30);
+    activeTypewriterInterval = timer;
     activeTypewriter = { timer, resolve, element, text };
   });
 }
@@ -2603,8 +2648,11 @@ async function stopGeneration() {
   if (!isGenerating) return;
   generationAbortRequested = true;
   isGenerating = false;
+  setModelControlsLocked(false);
 
   // Restore the Send button immediately, before waiting on the native abort.
+  clearInterval(activeTypewriterInterval);
+  activeTypewriterInterval = null;
   stopActiveTypewriter();
   updateSendButton();
   sendBtn.innerHTML = SEND_ICON_HTML;
@@ -2695,6 +2743,7 @@ async function generateResponse(userPrompt) {
 
   isGenerating = true;
   generationAbortRequested = false;
+  setModelControlsLocked(true);
   let generationTimedOut = false;
   let timeoutId = null;
   updateSendButton();
@@ -2810,6 +2859,7 @@ async function generateResponse(userPrompt) {
     if (isCurrentRun()) {
       await allowScreenSleep();
       isGenerating = false;
+      setModelControlsLocked(false);
       generationAbortRequested = false;
       updateSendButton();
       sendBtn.innerHTML = SEND_ICON_HTML;
@@ -3241,6 +3291,9 @@ newChatBtn.addEventListener('click', () => {
     showErrorOverlay('No model loaded', 'Load a model before starting a new chat.');
     return;
   }
+  clearInterval(activeTypewriterInterval);
+  activeTypewriterInterval = null;
+  stopActiveTypewriter();
   createSession({ title: 'New chat' });
   inputEl.focus();
 });

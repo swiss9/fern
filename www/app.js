@@ -661,6 +661,9 @@ function normalizeSessionsData(parsed) {
         title: typeof session.title === 'string' && session.title.trim()
           ? session.title.trim()
           : 'New chat',
+        model: typeof session.model === 'string' && session.model
+          ? session.model
+          : model,
         messages: normalizeMessageList(session.messages),
       }));
   });
@@ -693,6 +696,33 @@ function ensureModelSessions(name) {
   return sessions[key];
 }
 
+function createSessionRecord(title, messages) {
+  return {
+    id: createSessionId(),
+    title: title || 'New chat',
+    // Snapshot the owning model (raw filename) so a sidebar entry always knows
+    // which model must be loaded when the chat is tapped.
+    model: modelName || '',
+    messages: normalizeMessageList(messages),
+  };
+}
+
+// Map a session id back to the model (raw filename) that owns it. Uses the
+// stored tag when present, otherwise resolves the sessions grouping key back
+// to a filename via the alias table.
+function findSessionOwnerModel(sessionId) {
+  for (const key of Object.keys(sessions)) {
+    const list = Array.isArray(sessions[key]) ? sessions[key] : [];
+    const session = list.find((entry) => entry && entry.id === sessionId);
+    if (!session) continue;
+    if (session.model) return session.model;
+    if (modelName && sessionKeyForModel(modelName) === key) return modelName;
+    const aliasFile = Object.keys(modelAliases).find((file) => modelAliases[file] === key);
+    return aliasFile || key;
+  }
+  return '';
+}
+
 function getActiveSession() {
   if (!modelName) return null;
   const key = sessionKeyForModel(modelName);
@@ -709,11 +739,7 @@ function createSession(options) {
   const opts = options || {};
   if (!modelName) return null;
 
-  const session = {
-    id: createSessionId(),
-    title: opts.title || 'New chat',
-    messages: normalizeMessageList(opts.messages),
-  };
+  const session = createSessionRecord(opts.title || 'New chat', opts.messages);
 
   const list = ensureModelSessions(modelName);
   if (opts.append) list.push(session);
@@ -738,14 +764,22 @@ function updateActiveSessionTitle(text) {
   renderSidebarSessions();
 }
 
-function selectSession(id) {
-  if (!modelName) return;
-  const list = ensureModelSessions(modelName);
-  const session = list.find((entry) => entry.id === id);
-  if (!session) return;
-  activeSessionId = session.id;
-  renderSidebarSessions();
-  renderSessionMessages();
+async function selectSession(id) {
+  if (!id) return;
+  const currentList = modelName ? ensureModelSessions(modelName) : [];
+  if (currentList.some((session) => session.id === id)) {
+    activeSessionId = id;
+    renderSidebarSessions();
+    renderSessionMessages();
+    return;
+  }
+
+  // The tapped chat belongs to another model: find its owner, load that model
+  // (fully releasing the current one first inside loadInstalledModel) and then
+  // restore the tapped conversation verbatim.
+  const ownerModel = findSessionOwnerModel(id);
+  if (!ownerModel || ownerModel === modelName) return;
+  await loadInstalledModel(ownerModel, { selectSessionId: id });
 }
 
 async function deleteSession(id) {
@@ -767,11 +801,7 @@ async function deleteSession(id) {
     if (list.length > 0) {
       activeSessionId = list[0].id;
     } else {
-      const session = {
-        id: createSessionId(),
-        title: 'New chat',
-        messages: [],
-      };
+      const session = createSessionRecord('New chat', []);
       list.push(session);
       activeSessionId = session.id;
     }
@@ -944,21 +974,22 @@ async function activateModelSessions() {
 
   if (list.length === 0) {
     if (pendingLegacyMessages && pendingLegacyMessages.length > 0) {
-      const session = {
-        id: createSessionId(),
-        title: 'Restored chat',
-        messages: pendingLegacyMessages,
-      };
-      list.push(session);
+      const legacySession = createSessionRecord('Restored chat', pendingLegacyMessages);
       pendingLegacyMessages = null;
+      list.push(legacySession);
       await clearLegacyChatHistory();
     } else {
-      list.push({ id: createSessionId(), title: 'New chat', messages: [] });
+      list.push(createSessionRecord('New chat', []));
     }
     activeSessionId = list[0].id;
   } else if (!list.some((session) => session.id === activeSessionId)) {
     activeSessionId = list[0].id;
   }
+
+  // Keep the owner tag correct for every session in this model's group.
+  list.forEach((session) => {
+    if (!session.model) session.model = sessionKeyForModel(modelName);
+  });
 
   renderSidebarSessions();
   renderSessionMessages();
@@ -1359,7 +1390,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '3.1.7';
+  let version = '3.1.8';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -1387,24 +1418,47 @@ function closeSettings() {
   settingsModal.style.display = 'none';
 }
 
+// Belt-and-braces teardown: drops every context the engine still holds so a
+// stale llama.cpp instance can block the next model from mmap'ing its file
+// (the classic "Model file not found" context release race).
+async function releaseEngineContexts() {
+  const pro = llamaCppPro();
+  if (pro && typeof pro.releaseAllLlama === 'function') {
+    try {
+      await pro.releaseAllLlama();
+      return;
+    } catch (error) {
+      console.warn('[Fern] releaseAllLlama failed:', error);
+    }
+  }
+  const native = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins[LlamaCppPluginName];
+  if (native && typeof native.releaseAllContexts === 'function') {
+    try {
+      await native.releaseAllContexts();
+    } catch (error) {
+      console.warn('[Fern] releaseAllContexts failed:', error);
+    }
+  }
+}
+
 async function unloadActiveContext() {
   const pro = llamaCppPro();
   const context = activeContext;
-  if (!context) return;
 
-  try {
-    if (pro && typeof pro.releaseContext === 'function' && context.id != null) {
-      await pro.releaseContext({ contextId: context.id });
-    } else if (typeof context.release === 'function') {
-      await context.release();
-    } else if (pro) {
-      await pro.releaseAllLlama();
+  if (context) {
+    try {
+      if (pro && typeof pro.releaseContext === 'function' && context.id != null) {
+        await pro.releaseContext({ contextId: context.id });
+      } else if (typeof context.release === 'function') {
+        await context.release();
+      }
+    } catch (error) {
+      console.warn('[Fern] Could not release the model context:', error);
     }
-  } catch (error) {
-    console.warn('[Fern] Could not release the model context:', error);
+    if (activeContext === context) activeContext = null;
   }
 
-  if (activeContext === context) activeContext = null;
+  await releaseEngineContexts();
 }
 
 async function releaseLoadedModel() {
@@ -1669,10 +1723,22 @@ async function loadModelFile(modelPath, notify, options) {
       ', native LlamaCpp plugin = ' + diag.nativeLlamaCpp + '.');
   }
 
-  // Unload only the model that is currently resident in memory. The previous
-  // model file stays on disk so it can be loaded again at any time.
+  // Completely unload whatever is resident before touching initLlama().
+  // releaseAllContexts is awaited so the native engine is guaranteed idle
+  // before the next model file is opened (no release/load race).
+  if (isGenerating) {
+    try { await stopGeneration(); } catch (stopError) {
+      console.warn('[Fern] Could not stop generation before unload:', stopError);
+    }
+    isGenerating = false;
+  }
   await unloadActiveContext();
+  await releaseEngineContexts();
   contextReady = false;
+  activeContext = null;
+  stopActiveTypewriter();
+  generationRunId++;
+  generationAbortRequested = false;
 
   await keepScreenAwake();
   try {
@@ -1681,11 +1747,13 @@ async function loadModelFile(modelPath, notify, options) {
     if (notify) notify('Initializing context: ' + modelName);
 
     // The FilePicker returns content:// URIs that the native loader cannot
-    // open directly. Downloaded models are resolved with Filesystem.getUri()
-    // and must be passed through unchanged (exactPath).
+    // open directly (keep them verbatim). Downloaded models are resolved to
+    // file:// URIs by Filesystem.getUri() and must be stripped to a raw
+    // absolute path (/data/user/0/.../files/foo.gguf) before fopen().
+    const normalizeModelPath = (p) => String(p || '').replace(/^file:\/\//, '');
     const candidates = exactPath
-      ? [modelPath]
-      : [modelPath.replace(/^(content|file):\/\//, ''), modelName].filter(Boolean);
+      ? [normalizeModelPath(modelPath)]
+      : [normalizeModelPath(modelPath.replace(/^(content|file):\/\//, '')), modelName].filter(Boolean);
 
     let lastError = null;
     for (const candidate of candidates) {
@@ -1728,18 +1796,26 @@ async function statModelInData(filename) {
   }
 }
 
-async function loadInstalledModel(filename) {
+// Filesystem.getUri() returns a file:///data/user/0/... URI, but the native
+// llama.cpp engine opens the model with fopen() and needs the raw absolute
+// path without any scheme prefix.
+async function resolveRawModelPath(filename) {
+  const { Filesystem } = getPlugins();
+  if (!Filesystem) throw new Error('The Filesystem plugin is not installed.');
+  const { uri } = await Filesystem.getUri({ path: filename, directory: Directory.Data });
+  if (!uri) throw new Error('Could not resolve the saved model path');
+  return String(uri).replace(/^file:\/\//, '');
+}
+
+async function loadInstalledModel(filename, options) {
+  const opts = options || {};
+  const selectSessionId = typeof opts.selectSessionId === 'string' ? opts.selectSessionId : '';
   if (!filename) return false;
 
-  if (modelName === filename && contextReady) {
+  const isModelLoaded = (target) => modelName === target && contextReady;
+  if (isModelLoaded(filename) && (!selectSessionId || selectSessionId === activeSessionId)) {
     await refreshModelManager();
     return true;
-  }
-
-  const { Filesystem } = getPlugins();
-  if (!Filesystem) {
-    showErrorOverlay('Filesystem unavailable', 'The Filesystem plugin is not installed.');
-    return false;
   }
 
   if (!(await statModelInData(filename))) {
@@ -1748,59 +1824,86 @@ async function loadInstalledModel(filename) {
     return false;
   }
 
+  // Snapshot the whole app state so a failed switch can put it back exactly.
   const previousModelName = modelName;
   const previousModelDisplayName = modelDisplayName;
   const previousSessionId = activeSessionId;
 
+  // Switch chat scope to the incoming model instantly: the sidebar and the
+  // message area re-render for the target model's history right away.
   modelName = filename;
   modelDisplayName = getModelAlias(filename);
+  activeSessionId = selectSessionId;
+  customSystemPrompt = '';
+  syncModelDisplayName();
   setModelLabels(filename);
   renderSidebarSessions();
+  renderSessionMessages();
+  updatePersonalizationControls();
   setSendEnabled(false);
   showOverlay('Loading ' + (modelDisplayName || filename) + ' (this can take a while)...');
   progressBar.style.display = '';
   progressBar.style.width = '100%';
 
+  let loadSucceeded = false;
   try {
-    const { uri } = await Filesystem.getUri({ path: filename, directory: Directory.Data });
-    if (!uri) throw new Error('Could not resolve the saved model path');
+    const rawPath = await resolveRawModelPath(filename);
 
-    await loadModelFile(uri, null, { exact: true });
+    // Fully release the previous model's context (waitFor finish) before
+    // initLlama touches the next file — this is the release race fix.
+    await loadModelFile(rawPath, null, { exact: true });
     await saveActiveModelName(filename);
     await onModelReady();
+
+    if (selectSessionId) {
+      const list = ensureModelSessions(filename);
+      if (list.some((session) => session.id === selectSessionId)) {
+        activeSessionId = selectSessionId;
+        renderSidebarSessions();
+        renderSessionMessages();
+      } else if (list.length > 0) {
+        activeSessionId = list[0].id;
+      }
+    }
+
     await updateStorageMeter();
     await refreshModelManager();
+    loadSucceeded = true;
     return true;
   } catch (error) {
     console.error('Model switch failed:', error);
 
+    // DO NOT wipe app state: put back the exact previous model/session scope.
     const previousContextStillLoaded = contextReady && !!previousModelName;
-
     modelName = previousModelName;
     modelDisplayName = previousModelDisplayName || (previousModelName ? getModelAlias(previousModelName) : '');
     activeSessionId = previousSessionId;
+    customSystemPrompt = '';
 
     if (previousModelName) {
+      syncModelDisplayName();
       setModelLabels(previousModelName);
-      updatePersonalizationControls();
       renderSidebarSessions();
       renderSessionMessages();
+      await loadModelPersonalization();
+      updatePersonalizationControls();
     } else {
       resetToNoModelState();
     }
 
+    // The failed switch released the old context; restore the previous model
+    // from disk only when it is genuinely no longer resident.
     if (!previousContextStillLoaded) {
       contextReady = false;
       activeContext = null;
 
       if (previousModelName && await statModelInData(previousModelName)) {
         try {
-          const { uri } = await Filesystem.getUri({ path: previousModelName, directory: Directory.Data });
-          if (uri) {
-            await loadModelFile(uri, null, { exact: true });
-            await saveActiveModelName(previousModelName);
-            await onModelReady({ announce: false });
-          }
+          const rawPath = await resolveRawModelPath(previousModelName);
+          await loadModelFile(rawPath, null, { exact: true });
+          await saveActiveModelName(previousModelName);
+          await onModelReady({ announce: false });
+          renderSessionMessages();
         } catch (restoreError) {
           console.error('Could not restore the previous model:', restoreError);
         }
@@ -1820,7 +1923,7 @@ async function loadInstalledModel(filename) {
   } finally {
     hideOverlay();
     progressBar.style.display = 'none';
-    progressBar.style.width = '0%';
+    if (loadSucceeded && !isGenerating) setSendEnabled(contextReady);
   }
 }
 
@@ -2007,11 +2110,7 @@ async function downloadAndLoadModel(url, filename) {
       throw new Error('Download failed: File not saved properly.');
     }
 
-    const uriResult = await Filesystem.getUri({ path: filename, directory: Directory.Data });
-    if (!uriResult || !uriResult.uri) {
-      throw new Error('Download failed: File not saved properly.');
-    }
-    const rawPath = uriResult.uri.replace('file://', '');
+    const rawPath = await resolveRawModelPath(filename);
 
     if (progressListener) {
       try {
@@ -2046,12 +2145,10 @@ async function downloadAndLoadModel(url, filename) {
 
     if (!contextReady && previousModelName && await statModelInData(previousModelName)) {
       try {
-        const { uri } = await Filesystem.getUri({ path: previousModelName, directory: Directory.Data });
-        if (uri) {
-          await loadModelFile(uri, null, { exact: true });
-          await saveActiveModelName(previousModelName);
-          await onModelReady({ announce: false });
-        }
+        const rawPath = await resolveRawModelPath(previousModelName);
+        await loadModelFile(rawPath, null, { exact: true });
+        await saveActiveModelName(previousModelName);
+        await onModelReady({ announce: false });
       } catch (restoreError) {
         console.error('Could not restore the previous model:', restoreError);
       }
@@ -2126,17 +2223,8 @@ async function pickAndLoadModel() {
       toDirectory: Directory.Data,
     });
 
-    const uriResult = await Filesystem.getUri({ path: filename, directory: Directory.Data });
-    if (!uriResult || !uriResult.uri) throw new Error('Could not resolve the imported model path');
-
-    // getUri returns a file:// URI, but the native llama.cpp engine opens the
-    // model with fopen() and needs a raw absolute path.
-    const rawPath = uriResult.uri.replace('file://', '');
-
-    const stat = await Filesystem.stat({ path: filename, directory: Directory.Data });
-    console.log('File exists, size: ' + stat.size);
-
     showOverlay('Loading ' + filename + ' (this can take a while)...');
+    const rawPath = await resolveRawModelPath(filename);
     await loadModelFile(rawPath, null, { exact: true });
     await saveActiveModelName(filename);
     await onModelReady();
@@ -2161,13 +2249,10 @@ async function pickAndLoadModel() {
 
     if (!contextReady && previousModelName && await statModelInData(previousModelName)) {
       try {
-        const { Filesystem } = getPlugins();
-        const { uri } = await Filesystem.getUri({ path: previousModelName, directory: Directory.Data });
-        if (uri) {
-          await loadModelFile(uri, null, { exact: true });
-          await saveActiveModelName(previousModelName);
-          await onModelReady({ announce: false });
-        }
+        const rawPath = await resolveRawModelPath(previousModelName);
+        await loadModelFile(rawPath, null, { exact: true });
+        await saveActiveModelName(previousModelName);
+        await onModelReady({ announce: false });
       } catch (restoreError) {
         console.error('Could not restore the previous model:', restoreError);
       }
@@ -2231,10 +2316,7 @@ async function loadPersistedModel() {
     const { Filesystem } = getPlugins();
     if (!Filesystem) throw new Error('The Filesystem plugin is not installed.');
 
-    const { uri } = await Filesystem.getUri({ path: targetName, directory: Directory.Data });
-    if (!uri) throw new Error('Could not resolve the saved model path');
-
-    const rawPath = uri.replace(/^file:\/\//, '');
+    const rawPath = await resolveRawModelPath(targetName);
     await loadModelFile(rawPath, null, { exact: true });
     await saveActiveModelName(targetName);
     await onModelReady({ announce: false });
@@ -2278,7 +2360,7 @@ function appendMessage(role, content, options) {
   if (persist) {
     let session = getActiveSession();
     if (!session && modelName) {
-      session = { id: createSessionId(), title: 'New chat', messages: [] };
+      session = createSessionRecord('New chat', []);
       ensureModelSessions(modelName).unshift(session);
       activeSessionId = session.id;
       renderSidebarSessions();
@@ -2874,6 +2956,7 @@ async function importChat() {
     const session = {
       id: createSessionId(),
       title: imported.title.slice(0, 60),
+      model: modelName,
       messages: imported.messages,
     };
 
@@ -3108,11 +3191,18 @@ if (chatSearchInput) {
 chatNav.addEventListener('click', (event) => {
   const deleteButton = event.target.closest('[data-delete-session-id]');
   if (deleteButton) {
-    deleteSession(deleteButton.getAttribute('data-delete-session-id'));
+    deleteSession(deleteButton.getAttribute('data-delete-session-id')).catch((error) => {
+      console.error('Session delete failed:', error);
+    });
     return;
   }
   const sessionButton = event.target.closest('[data-session-id]');
-  if (sessionButton) selectSession(sessionButton.getAttribute('data-session-id'));
+  if (sessionButton) {
+    selectSession(sessionButton.getAttribute('data-session-id')).catch((error) => {
+      console.error('Session select failed:', error);
+    });
+    return;
+  }
 });
 
 // ERROR OVERLAY

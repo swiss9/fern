@@ -1561,7 +1561,7 @@ function scheduleSaveSettings(delay) {
 }
 
 async function updateAppVersion() {
-  let version = '1.0.1';
+  let version = '1.0.3';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -2072,7 +2072,7 @@ async function runModelLoad(modelPath, notify, options) {
           model: candidate,
           n_ctx: 2048,
           n_batch: 512,
-          n_threads: navigator.hardwareConcurrency || 4,
+          n_threads: Math.max(2, (navigator.hardwareConcurrency || 4) - 1),
           ctx_shift: true,
         });
         activeContext = context;
@@ -2689,6 +2689,7 @@ function appendMessage(role, content, options) {
   }
 
   const displayName = modelDisplayName || modelName || 'Local model';
+  const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const div = document.createElement('div');
   div.className = role === 'user'
     ? 'group mb-8 flex flex-col items-end'
@@ -2704,6 +2705,7 @@ function appendMessage(role, content, options) {
       '<div class="mb-1.5 flex items-center gap-2 pr-0.5">' +
         editButton +
         '<span class="font-mono text-[10px] uppercase tracking-[0.12em] text-zinc-600">You</span>' +
+        '<span class="font-mono text-[10px] text-zinc-600">' + timestamp + '</span>' +
       '</div>' +
       '<div class="max-w-[85%] rounded-lg rounded-br-sm border border-white/[0.04] bg-line px-3.5 py-2.5 sm:max-w-[75%]">' +
         '<p class="break-words [overflow-wrap:anywhere] min-w-0 font-mono text-[13.5px] leading-[1.65] text-white whitespace-pre-wrap">' + escapeHtml(content) + '</p>' +
@@ -2714,6 +2716,7 @@ function appendMessage(role, content, options) {
       '<div class="min-w-0 flex-1">' +
         '<div class="mb-1.5 flex items-center gap-2">' +
           '<span class="text-[12px] font-semibold tracking-tight text-white">' + escapeHtml(displayName) + '</span>' +
+          '<span class="font-mono text-[10px] text-zinc-600">' + timestamp + '</span>' +
         '</div>' +
         '<p class="break-words [overflow-wrap:anywhere] min-w-0 font-mono text-[13.5px] leading-[1.75] text-white whitespace-pre-wrap"></p>' +
       '</div>';
@@ -2786,111 +2789,86 @@ function trimHistoryForContext(history, systemPrompt) {
   return trimmed;
 }
 
-function buildChatMessages(history) {
-  const systemPrompt = (customSystemPrompt && customSystemPrompt.trim()) || FERN_SYSTEM_PROMPT;
-  const messages = [{ role: 'system', content: systemPrompt }];
-  (history || []).forEach((msg) => {
-    if (!msg || !msg.role) return;
-    messages.push({ role: msg.role, content: msg.content || '' });
-  });
-  return messages;
-}
+// Universal prompt formatter: picks the correct chat template from the model
+// filename so every supported family receives the exact control tokens it
+// expects. Returns a single raw prompt string (history already trimmed).
+function formatPrompt(modelName, systemPrompt, history) {
+  const name = String(modelName || '').toLowerCase();
+  const system = String(systemPrompt || '');
+  const messages = (Array.isArray(history) ? history : [])
+    .filter((msg) => msg && msg.role && typeof msg.content === 'string');
 
-async function formatPromptWithNative(messages) {
-  const context = activeContext;
-  const pro = llamaCppPro();
-  const sources = [];
-  if (context) sources.push(context);
-  if (pro && pro !== context) sources.push(pro);
+  // Llama 3 / 3.2
+  if (name.includes('llama')) {
+    let prompt = '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n' + system + '<|eot_id|>';
+    messages.forEach((msg) => {
+      prompt += '<|start_header_id|>' + msg.role + '<|end_header_id|>\n\n' + msg.content + '<|eot_id|>';
+    });
+    return prompt + '<|start_header_id|>assistant<|end_header_id|>\n\n';
+  }
 
-  const methodNames = ['formatChat', 'applyChatTemplate', 'getFormattedChat'];
-  for (const source of sources) {
-    for (const methodName of methodNames) {
-      if (typeof source[methodName] !== 'function') continue;
-      try {
-        let result;
-        if (methodName === 'getFormattedChat' && source === pro && context && context.id != null) {
-          result = await source.getFormattedChat({ contextId: context.id, messages, params: {} });
-        } else {
-          result = await source[methodName](messages);
-        }
-        const prompt = typeof result === 'string'
-          ? result
-          : result && (result.prompt || result.formatted || result.text);
-        if (prompt && typeof prompt === 'string' && prompt.length > 0) {
-          console.log('[Fern] using native chat template via ' + methodName);
-          return prompt;
-        }
-      } catch (error) {
-        console.warn('[Fern] native ' + methodName + ' failed; trying fallback:', error);
+  // Qwen / ChatML
+  if (name.includes('qwen')) {
+    let prompt = '<|im_start|>system\n' + system + '<|im_end|>\n';
+    messages.forEach((msg) => {
+      prompt += '<|im_start|>' + msg.role + '\n' + msg.content + '<|im_end|>\n';
+    });
+    return prompt + '<|im_start|>assistant\n';
+  }
+
+  // Gemma (system prompt folded into the first user turn)
+  if (name.includes('gemma')) {
+    let prompt = '';
+    let firstUser = true;
+    messages.forEach((msg) => {
+      if (msg.role === 'user') {
+        const content = firstUser ? system + '\n\n' + msg.content : msg.content;
+        firstUser = false;
+        prompt += '<start_of_turn>user\n' + content + '<end_of_turn>\n';
+      } else if (msg.role === 'assistant') {
+        prompt += '<start_of_turn>model\n' + msg.content + '<end_of_turn>\n';
       }
+    });
+    if (firstUser && system) {
+      prompt += '<start_of_turn>user\n' + system + '<end_of_turn>\n';
     }
+    return prompt + '<start_of_turn>model\n';
   }
-  return null;
-}
 
-function buildChatMLPrompt(messages) {
-  return messages.map((msg) =>
-    '<|im_start|>' + msg.role + '\n' + (msg.content || '') + '<|im_end|>\n'
-  ).join('') + '<|im_start|>assistant\n';
-}
-
-function buildLlama3Prompt(messages) {
-  let prompt = '<|begin_of_text|>';
-  messages.forEach((msg) => {
-    prompt += '<|start_header_id|>' + msg.role + '<|end_header_id|>\n\n' +
-      (msg.content || '') + '<|eot_id|>';
-  });
-  return prompt + '<|start_header_id|>assistant<|end_header_id|>\n\n';
-}
-
-function buildMistralPrompt(messages) {
-  let system = '';
-  const turns = [];
-  messages.forEach((msg) => {
-    if (msg.role === 'system') {
-      system = msg.content || '';
-    } else {
-      turns.push(msg);
-    }
-  });
-
-  let prompt = '';
-  let hasUserTurn = false;
-  turns.forEach((msg) => {
-    if (msg.role === 'user') {
-      const content = !hasUserTurn && system
-        ? system + '\n\n' + (msg.content || '')
-        : (msg.content || '');
-      prompt += '<s>[INST] ' + content + ' [/INST]';
-      hasUserTurn = true;
-    } else if (msg.role === 'assistant') {
-      if (!hasUserTurn) return;
-      prompt += ' ' + (msg.content || '') + '</s>';
-    }
-  });
-  return prompt;
-}
-
-function fallbackChatTemplate(messages) {
-  const name = (modelName || '').toLowerCase();
-  if (name.includes('llama')) return buildLlama3Prompt(messages);
-  if (name.includes('mistral')) return buildMistralPrompt(messages);
-  if (name.includes('qwen')) return buildChatMLPrompt(messages);
-  return buildChatMLPrompt(messages);
-}
-
-async function buildChatPrompt(history) {
-  const systemPrompt = (customSystemPrompt && customSystemPrompt.trim()) || FERN_SYSTEM_PROMPT;
-  const trimmedHistory = trimHistoryForContext(history, systemPrompt);
-  if (trimmedHistory.length !== (Array.isArray(history) ? history.length : 0)) {
-    console.log('[Fern] trimmed chat context to ' + trimmedHistory.length + ' recent messages');
+  // Phi
+  if (name.includes('phi')) {
+    let prompt = '<|system|>\n' + system + '<|end|>\n';
+    messages.forEach((msg) => {
+      prompt += '<|' + msg.role + '|>\n' + msg.content + '<|end|>\n';
+    });
+    return prompt + '<|assistant|>\n';
   }
-  const messages = buildChatMessages(trimmedHistory);
-  const nativePrompt = await formatPromptWithNative(messages);
-  if (nativePrompt) return nativePrompt;
-  console.log('[Fern] native chat template unavailable; using filename fallback for ' + (modelName || 'unknown model'));
-  return fallbackChatTemplate(messages);
+
+  // Mistral (system prompt folded into the first user instruction)
+  if (name.includes('mistral')) {
+    let prompt = '';
+    let firstUser = true;
+    messages.forEach((msg) => {
+      if (msg.role === 'user') {
+        const content = firstUser && system ? system + '\n\n' + msg.content : msg.content;
+        firstUser = false;
+        prompt += '[INST] ' + content + ' [/INST]';
+      } else if (msg.role === 'assistant') {
+        prompt += ' ' + msg.content + '</s>';
+      }
+    });
+    if (firstUser && system) {
+      prompt += '[INST] ' + system + ' [/INST]';
+    }
+    return prompt;
+  }
+
+  // Fallback: ChatML
+  let prompt = '<|im_start|>system\n' + system + '<|im_end|>\n';
+  messages.forEach((msg) => {
+    prompt += '<|im_start|>' + msg.role + '\n' + msg.content + '<|im_end|>\n';
+  });
+  return prompt + '<|im_start|>assistant\n';
 }
 
 function showTypingIndicator() {
@@ -2961,16 +2939,7 @@ function simulateTyping(element, text, shouldStop) {
   });
 }
 
-async function stopGeneration() {
-  if (!isGenerating) return;
-  generationAbortRequested = true;
-  setModelControlsLocked(false);
-
-  clearInterval(activeTypewriterInterval);
-  activeTypewriterInterval = null;
-  stopActiveTypewriter();
-  stopGenerationForegroundService();
-
+async function requestNativeAbort() {
   try {
     const native = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins[LlamaCppPluginName];
     const pro = llamaCppPro();
@@ -2999,13 +2968,25 @@ async function stopGeneration() {
     }
   } catch (error) {
     console.warn('[Fern] stopGeneration failed:', error);
-  } finally {
-    isGenerating = false;
-    generationAbortRequested = false;
-    updateSendButton();
-    sendBtn.innerHTML = SEND_ICON_HTML;
-    sendBtn.setAttribute('aria-label', 'Send message');
   }
+}
+
+async function stopGeneration() {
+  if (!isGenerating) return;
+  generationAbortRequested = true;
+
+  // Flip the UI instantly so the button responds on the first tap; the
+  // native abort is fired in the background and never blocks the repaint.
+  isGenerating = false;
+  setModelControlsLocked(false);
+  clearInterval(activeTypewriterInterval);
+  activeTypewriterInterval = null;
+  stopActiveTypewriter();
+  updateSendButton();
+  sendBtn.innerHTML = SEND_ICON_HTML;
+  sendBtn.setAttribute('aria-label', 'Send message');
+  stopGenerationForegroundService();
+  requestNativeAbort();
 }
 
 async function generateResponse(userPrompt) {
@@ -3077,7 +3058,12 @@ async function generateResponse(userPrompt) {
       return;
     }
 
-    const prompt = await buildChatPrompt(activeMessages());
+    const systemPrompt = (customSystemPrompt && customSystemPrompt.trim()) || FERN_SYSTEM_PROMPT;
+    const history = trimHistoryForContext(activeMessages(), systemPrompt);
+    if (history.length !== activeMessages().length) {
+      console.log('[Fern] trimmed chat context to ' + history.length + ' recent messages');
+    }
+    const prompt = formatPrompt(modelName, systemPrompt, history);
     if (isAborted()) {
       finalizeStopped();
       return;
@@ -3101,6 +3087,7 @@ async function generateResponse(userPrompt) {
 
     const result = await activeContext.completion({
       prompt,
+      messages: null,
       n_predict: appSettings.maxTokens,
       temperature: appSettings.temperature,
       top_k: 40,

@@ -2,6 +2,10 @@
   "appId": "com.fern.localai",
   "appName": "Fern",
   "webDir": "www",
+  "android": {
+    "webContentsDebuggingEnabled": false,
+    "allowMixedContent": false
+  },
   "plugins": {
     "SplashScreen": {
       "enabled": true,

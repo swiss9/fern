@@ -7,8 +7,8 @@ android {
         applicationId "com.fern.localai"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 49
-        versionName "3.2.2"
+        versionCode 50
+        versionName "3.2.3"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -19,9 +19,9 @@ android {
     signingConfigs {
         release {
             storeFile file("fern-keystore.jks")
-            storePassword System.getenv("KEYSTORE_PASSWORD") ?: "F3rn_\$3cur3_K3yst0r3_2026!x"
-            keyAlias System.getenv("KEY_ALIAS") ?: "fern-key-secure"
-            keyPassword System.getenv("KEY_PASSWORD") ?: "F3rn_\$3cur3_K3yst0r3_2026!x"
+            storePassword System.getenv("KEYSTORE_PASSWORD")
+            keyAlias System.getenv("KEY_ALIAS")
+            keyPassword System.getenv("KEY_PASSWORD")
         }
     }
     buildTypes {
@@ -29,9 +29,23 @@ android {
             signingConfig signingConfigs.release
         }
         release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
+        }
+    }
+}
+
+def requiredSigningEnv = ['KEYSTORE_PASSWORD', 'KEY_ALIAS', 'KEY_PASSWORD']
+gradle.taskGraph.whenReady { graph ->
+    def buildingRelease = graph.allTasks.any {
+        it.name == 'assembleRelease' || it.name == 'bundleRelease' || it.name == 'packageRelease'
+    }
+    if (buildingRelease) {
+        def missing = requiredSigningEnv.findAll { !System.getenv(it) }
+        if (missing) {
+            throw new GradleException("Missing required signing environment variables: ${missing.join(', ')}")
         }
     }
 }

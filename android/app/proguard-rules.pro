@@ -1,3 +1,7 @@
+-keep class ai.annadata.plugin.capacitor.** { *; }
+-keepclasseswithmembernames class * { native <methods>; }
+-keep class com.getcapacitor.** { *; }
+
 # Add project specific ProGuard rules here.
 # You can control the set of applied configuration files using the
 # proguardFiles setting in build.gradle.

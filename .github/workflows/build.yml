@@ -17,12 +17,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: 'npm'
 
       - name: Setup Java JDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 21
+          cache: 'gradle'
 
       - name: Setup Android SDK and NDK
         uses: android-actions/setup-android@v3
@@ -38,20 +40,6 @@ jobs:
 
       - name: Install dependencies
         run: npm install
-
-      - name: Build latest llama.cpp for Android
-        run: |
-          git clone https://github.com/ggml-org/llama.cpp.git --depth 1
-          cd llama.cpp
-          cmake -B build-android \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-24 \
-            -DLLAMA_BUILD_TESTS=OFF \
-            -DLLAMA_BUILD_EXAMPLES=OFF
-          cmake --build build-android --config Release
-          find build-android -name "libllama.so" -exec cp {} ../node_modules/llama-cpp-pro/android/src/main/jniLibs/arm64-v8a/libllama-cpp-arm64.so \;
-          cd ..
 
       - name: Sync Capacitor
         run: npx cap sync android

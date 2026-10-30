@@ -1447,10 +1447,10 @@ function renderModelList(models) {
       ? escapeHtml(model.name) + ' · ' + formatBytes(model.size)
       : formatBytes(model.size);
     const isActive = model.name === modelName && contextReady;
-    const loadButton = '<button type="button" data-load-model="' + escapeHtml(model.name) + '" class="shrink-0 rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition ' +
+    const loadButton = '<button type="button" data-load-model="' + escapeHtml(model.name) + '" class="shrink-0 transition ' +
       (isActive
-        ? 'border-white bg-white text-base'
-        : 'border-line bg-white/[0.03] text-zinc-200 hover:border-zinc-600 hover:bg-white/[0.07] hover:text-white') + '">' +
+        ? 'px-1.5 py-0.5 text-[9px] uppercase font-mono border border-zinc-600 text-zinc-400 bg-transparent rounded-sm'
+        : 'rounded-md border border-line bg-white/[0.03] px-2.5 py-1.5 text-[11px] font-medium text-zinc-200 hover:border-zinc-600 hover:bg-white/[0.07] hover:text-white') + '">' +
       (isActive ? 'Loaded' : 'Load') +
     '</button>';
     return '<div class="flex items-center gap-2 rounded-md border border-line bg-base px-3 py-2.5">' +
@@ -1561,7 +1561,7 @@ function scheduleSaveSettings(delay) {
 }
 
 async function updateAppVersion() {
-  let version = '1.0.3';
+  let version = '1.0.4';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -2798,13 +2798,15 @@ function formatPrompt(modelName, systemPrompt, history) {
   const messages = (Array.isArray(history) ? history : [])
     .filter((msg) => msg && msg.role && typeof msg.content === 'string');
 
-  // Llama 3 / 3.2
+  // Llama 3 / 3.2 — canonical template, byte-exact for a single turn:
+  // <|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{systemPrompt}<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n
   if (name.includes('llama')) {
-    let prompt = '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n' + system + '<|eot_id|>';
-    messages.forEach((msg) => {
-      prompt += '<|start_header_id|>' + msg.role + '<|end_header_id|>\n\n' + msg.content + '<|eot_id|>';
-    });
-    return prompt + '<|start_header_id|>assistant<|end_header_id|>\n\n';
+    const turns = messages
+      .filter((msg) => msg.role === 'user' || msg.role === 'assistant')
+      .map((msg) => '<|start_header_id|>' + msg.role + '<|end_header_id|>\n\n' + msg.content + '<|eot_id|>')
+      .join('');
+    return '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n' + system + '<|eot_id|>' +
+      turns + '<|start_header_id|>assistant<|end_header_id|>\n\n';
   }
 
   // Qwen / ChatML

@@ -1561,7 +1561,7 @@ function scheduleSaveSettings(delay) {
 }
 
 async function updateAppVersion() {
-  let version = '1.0.5';
+  let version = '1.0.6';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -3086,13 +3086,25 @@ async function generateResponse(userPrompt) {
       scheduleAutoScroll();
     };
 
-    const isLlamaModel = String(modelName || '').toLowerCase().includes('llama');
+    const modelKey = String(modelName || '').toLowerCase();
+    const isLlamaModel = modelKey.includes('llama');
+    const isQwenModel = modelKey.includes('qwen');
+    const useNativeChatFormat = isLlamaModel || isQwenModel;
+    const chatFormat = isLlamaModel ? 'llama-3' : (isQwenModel ? 'chatml' : null);
+    const nativeMessages = useNativeChatFormat
+      ? [{ role: 'system', content: systemPrompt }].concat(
+          history.filter((msg) => msg.role !== 'system')
+        )
+      : null;
 
     console.log("RAW PROMPT:", formattedPrompt);
+    console.log("FORMATTED PROMPT JSON:", JSON.stringify(formattedPrompt));
 
     const result = await activeContext.completion({
       prompt: formattedPrompt,
-      messages: null,
+      messages: nativeMessages,
+      chat_format: chatFormat,
+      parse_special: true,
       chatTemplate: null,
       chat_template: null,
       applyTemplate: false,

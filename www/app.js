@@ -1390,7 +1390,7 @@ async function saveSettings() {
 }
 
 async function updateAppVersion() {
-  let version = '3.1.8';
+  let version = '3.2.0';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -2423,8 +2423,17 @@ function lastAssistantBubble() {
 // 6. GENERATION
 // ============================================================
 const FERN_SYSTEM_PROMPT = 'You are Fern, a helpful local AI.';
-const QWEN_STOP_TOKENS = ['<|im_end|>', '<|endoftext|>'];
 const GENERATION_TIMEOUT_MS = 180000;
+
+function getStopTokens(modelName) {
+  const name = String(modelName || '').toLowerCase();
+  if (name.includes('llama')) return ['<|eot_id|>', '<|end_of_text|>', '<|start_header_id|>'];
+  if (name.includes('qwen')) return ['<|im_end|>', '<|endoftext|>'];
+  if (name.includes('gemma')) return ['<end_of_turn>', '<eos>'];
+  if (name.includes('phi')) return ['<|end|>', '<|user|>', '<|assistant|>'];
+  if (name.includes('mistral')) return ['</s>'];
+  return ['</s>', '<|endoftext|>'];
+}
 
 function buildChatMessages(history) {
   const systemPrompt = (customSystemPrompt && customSystemPrompt.trim()) || FERN_SYSTEM_PROMPT;
@@ -2726,12 +2735,12 @@ async function generateResponse(userPrompt) {
 
     const result = await activeContext.completion({
       prompt,
-      n_predict: appSettings.maxTokens,
+      n_predict: Math.min(appSettings.maxTokens, 512),
       temperature: appSettings.temperature,
       top_k: 40,
       penalty_repeat: appSettings.repeatPenalty,
-      repeat_penalty: appSettings.repeatPenalty,
-      stop: QWEN_STOP_TOKENS,
+      repeat_penalty: 1.15,
+      stop: getStopTokens(modelName),
     }, tokenCallback);
 
     if (timeoutId) {
@@ -3018,6 +3027,20 @@ mainLoadBtn.addEventListener('click', () => {
 document.getElementById('local-model-btn').addEventListener('click', () => {
   pickAndLoadModel();
 });
+
+// ACTIVE MODEL CHIP -> MODEL SELECTOR
+const activeModelChipBtn = document.getElementById('active-model-chip-btn');
+if (activeModelChipBtn) {
+  activeModelChipBtn.addEventListener('click', () => {
+    const details = document.getElementById('model-selector-details');
+    if (!details) return;
+    const navToggle = document.getElementById('nav-toggle');
+    const isMobile = window.matchMedia('(max-width: 767px)').matches;
+    if (isMobile && navToggle) navToggle.checked = true;
+    renderModelSelector();
+    details.open = true;
+  });
+}
 
 // MODEL SELECTOR
 if (modelSelectorList) {

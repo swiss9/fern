@@ -206,6 +206,9 @@ const SESSIONS_KEY = 'fern.sessions';
 const LEGACY_CHAT_HISTORY_KEY = 'chatHistory';
 const ACTIVE_MODEL_KEY = 'activeModelName';
 const MODEL_ALIASES_KEY = 'fern.modelAliases';
+const IS_LEGACY_USER_KEY = 'fern.isLegacyUser';
+const FIRST_LAUNCH_DATE_KEY = 'fern.firstLaunchDate';
+const LICENSE_PUBLIC_KEY_B64 = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
 const DEFAULT_SETTINGS = { temperature: 0.6, maxTokens: 512, repeatPenalty: 1.15 };
 const MAX_SESSION_MESSAGES = 50;
 const CONTEXT_TOKEN_LIMIT = 2048;
@@ -539,6 +542,50 @@ function getPreferencesPlugin() {
     return getPlugins().Preferences;
   } catch (error) {
     return null;
+  }
+}
+
+async function initializeLegacyFlags() {
+  const Preferences = getPreferencesPlugin();
+  if (!Preferences) return;
+  try {
+    const { value } = await Preferences.get({ key: IS_LEGACY_USER_KEY });
+    if (value === null || value === undefined) {
+      await Preferences.set({ key: IS_LEGACY_USER_KEY, value: 'true' });
+      await Preferences.set({ key: FIRST_LAUNCH_DATE_KEY, value: new Date().toISOString() });
+    }
+  } catch (error) {
+    console.warn('[Fern] Could not initialize legacy flags:', error);
+  }
+}
+
+function base64ToBytes(base64) {
+  const normalized = String(base64).replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function verifyLicenseKey(keyString, deviceId) {
+  try {
+    if (!keyString || !deviceId) return false;
+    if (typeof crypto === 'undefined' || !crypto.subtle) return false;
+    const signature = base64ToBytes(keyString);
+    const publicKeyBytes = base64ToBytes(LICENSE_PUBLIC_KEY_B64);
+    const publicKey = await crypto.subtle.importKey(
+      'raw',
+      publicKeyBytes,
+      { name: 'Ed25519' },
+      false,
+      ['verify']
+    );
+    const message = new TextEncoder().encode(String(deviceId));
+    return await crypto.subtle.verify({ name: 'Ed25519' }, publicKey, signature, message);
+  } catch (error) {
+    console.warn('[Fern] License verification failed:', error);
+    return false;
   }
 }
 
@@ -1514,7 +1561,7 @@ function scheduleSaveSettings(delay) {
 }
 
 async function updateAppVersion() {
-  let version = '1.0.0';
+  let version = '1.0.1';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -3599,6 +3646,7 @@ async function initApp() {
     setMultimodalSupport(false);
 
     updateAppVersion();
+    await initializeLegacyFlags();
     requestStartupPermissions();
     setupBackButtonHandler();
     updateStorageLocation();

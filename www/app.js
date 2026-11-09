@@ -1003,7 +1003,9 @@ function clearMessagesDom() {
 }
 
 function renderSessionMessages() {
-  const messages = activeMessages().slice();
+  const allMessages = activeMessages();
+  const startIndex = allMessages.length > 50 ? allMessages.length - 30 : 0;
+  const messages = allMessages.slice(startIndex);
   const token = ++messageRenderToken;
   const render = () => {
     if (token !== messageRenderToken) return;
@@ -1014,7 +1016,7 @@ function renderSessionMessages() {
     }
     hideEmptyState();
     messages.forEach((message, index) => {
-      appendMessage(message.role, message.content, { persist: false, index, immediate: true });
+      appendMessage(message.role, message.content, { persist: false, index: startIndex + index, immediate: true });
     });
     scheduleAutoScroll(true);
   };
@@ -1617,7 +1619,7 @@ function scheduleSaveSettings(delay) {
 }
 
 async function updateAppVersion() {
-  let version = '1.0.6';
+  let version = '1.0.9';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -1958,7 +1960,7 @@ function isOutOfMemoryError(error) {
 }
 
 function reportModelLoadError(error) {
-  if (error && error.fernCancelled) return;
+  if (error && (error.fernCancelled || error.fernLoadErrorShown)) return;
   const message = String((error && (error.message || error.errorMessage)) || error || '');
   if (isOutOfMemoryError(error)) {
     showErrorOverlay('Out of Memory', "Out of Memory: Your device couldn't handle this model. Please try a smaller model.");
@@ -2128,7 +2130,9 @@ async function runModelLoad(modelPath, notify, options) {
           model: candidate,
           n_ctx: 2048,
           n_batch: 512,
-          n_threads: Math.max(2, (navigator.hardwareConcurrency || 4) - 1),
+          n_threads: Math.max(2, (navigator.hardwareConcurrency || 4) - 2),
+          use_mmap: true,
+          use_mlock: false,
           ctx_shift: true,
         });
         activeContext = context;
@@ -2139,6 +2143,15 @@ async function runModelLoad(modelPath, notify, options) {
       }
     }
     throw lastError || new Error('Could not initialize model context');
+  } catch (initError) {
+    if (initError && initError.fernCancelled) throw initError;
+    const loadError = initError instanceof Error ? initError : new Error(String(initError));
+    loadError.fernLoadErrorShown = true;
+    showErrorOverlay(
+      'Failed to load model',
+      'Failed to load model. Your device may not have enough RAM, or this model architecture is not supported.'
+    );
+    throw loadError;
   } finally {
     await allowScreenSleep();
   }
@@ -2561,7 +2574,7 @@ async function pickAndLoadModel() {
     }
     const result = await Promise.race([
       FilePicker.pickFiles({
-        types: ['*/*', 'application/octet-stream'],
+        types: ['application/octet-stream'],
         limit: 1,
       }),
       new Promise((_, reject) => {
@@ -2574,11 +2587,13 @@ async function pickAndLoadModel() {
     ]);
     const file = result && result.files && result.files[0];
     if (!file) return;
-    const filename = String(file.name || file.path || '').split('/').pop();
-    if (!filename || !/\.gguf$/i.test(filename)) {
-      appendMessage('assistant', 'That file is not a .gguf model. Please select a .gguf file.');
+    const pickedName = String(file.name || file.path || '');
+    if (!pickedName.toLowerCase().endsWith('.gguf')) {
+      showErrorOverlay('Invalid file format', 'Invalid file format. Please select a valid .gguf model.');
       return;
     }
+    const filename = pickedName.split('/').pop();
+    if (!filename) return;
     if (!file.path) {
       throw new Error('The selected file did not provide a readable path');
     }
@@ -2828,6 +2843,23 @@ function lastAssistantBubble() {
 // ============================================================
 const FERN_SYSTEM_PROMPT = 'You are Fern, a helpful local AI.';
 const GENERATION_TIMEOUT_MS = 180000;
+const STOP_MARKERS = ['<|eot_id|>', '<|start_header_id|>', '<|end_of_text|>'];
+
+function findStopMarkerIndex(text) {
+  const value = String(text || '');
+  let found = -1;
+  for (let i = 0; i < STOP_MARKERS.length; i += 1) {
+    const pos = value.indexOf(STOP_MARKERS[i]);
+    if (pos !== -1 && (found === -1 || pos < found)) found = pos;
+  }
+  return found;
+}
+
+function truncateAtStopMarker(text) {
+  const value = String(text || '');
+  const index = findStopMarkerIndex(value);
+  return index === -1 ? value : value.slice(0, index);
+}
 
 function getStopTokens(modelName) {
   const name = String(modelName || '').toLowerCase();
@@ -3048,6 +3080,14 @@ function simulateTyping(element, text, shouldStop) {
         return;
       }
       element.innerText += words[index++];
+      if (findStopMarkerIndex(element.innerText) !== -1) {
+        element.innerText = truncateAtStopMarker(element.innerText);
+        clearInterval(timer);
+        if (activeTypewriterInterval === timer) activeTypewriterInterval = null;
+        if (activeTypewriter && activeTypewriter.timer === timer) activeTypewriter = null;
+        resolve();
+        return;
+      }
       scheduleAutoScroll();
     }, 30);
     activeTypewriterInterval = timer;
@@ -3140,7 +3180,9 @@ async function generateResponse(userPrompt) {
     return bubbleText;
   };
 
+  let hardStopFinalized = false;
   const finalizeStopped = () => {
+    if (hardStopFinalized) return;
     if (!isCurrentRun()) {
       if (bubble && bubble.parentNode) bubble.remove();
       return;
@@ -3152,6 +3194,25 @@ async function generateResponse(userPrompt) {
     } else if (bubble && bubble.parentNode) {
       bubble.remove();
     }
+    scheduleAutoScroll();
+  };
+
+  const finalizeHardStop = () => {
+    if (hardStopFinalized) return;
+    hardStopFinalized = true;
+    if (!isCurrentRun()) {
+      if (bubble && bubble.parentNode) bubble.remove();
+      return;
+    }
+    const partial = truncateAtStopMarker(bubbleText ? bubbleText.innerText : '');
+    if (bubbleText) bubbleText.innerText = partial;
+    if (partial.trim()) {
+      revealBubble(partial);
+      persistAssistantMessage(partial);
+    } else if (bubble && bubble.parentNode) {
+      bubble.remove();
+    }
+    stopGeneration();
     scheduleAutoScroll();
   };
 
@@ -3211,6 +3272,12 @@ async function generateResponse(userPrompt) {
       streamed = true;
       revealBubble();
       bubbleText.innerText += tok;
+      const stopIndex = findStopMarkerIndex(bubbleText.innerText);
+      if (stopIndex !== -1) {
+        bubbleText.innerText = bubbleText.innerText.slice(0, stopIndex);
+        finalizeHardStop();
+        return;
+      }
       scheduleAutoScroll();
     };
 
@@ -3286,8 +3353,8 @@ async function generateResponse(userPrompt) {
       return;
     }
 
-    const fullText = (result && (result.content || result.text)) || '';
-    const finalText = fullText || (streamed ? bubbleText.innerText : '') || '[Empty response]';
+    const fullText = truncateAtStopMarker((result && (result.content || result.text)) || '');
+    const finalText = fullText || (streamed ? truncateAtStopMarker(bubbleText.innerText) : '') || '[Empty response]';
 
     if (!streamed && finalText !== '[Empty response]') {
       // The native token callback never fired: simulate typing so the user

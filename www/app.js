@@ -42,7 +42,9 @@ function createNativeLlamaBridge() {
           temperature: params.temperature,
           top_k: params.top_k,
           penalty_repeat: params.penalty_repeat,
-          stop: Array.isArray(params.stop) ? params.stop : undefined,
+          stop: Array.isArray(params.stop)
+            ? JSON.stringify(params.stop)
+            : (typeof params.stop === 'string' ? params.stop : undefined),
           emit_partial_completion: !!callback,
           chat_format: params.chat_format,
           add_bos_token: params.add_bos_token,
@@ -1619,7 +1621,7 @@ function scheduleSaveSettings(delay) {
 }
 
 async function updateAppVersion() {
-  let version = '1.0.9';
+  let version = '1.1.0';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -2861,6 +2863,47 @@ function truncateAtStopMarker(text) {
   return index === -1 ? value : value.slice(0, index);
 }
 
+// <|begin_of_text|> is a prompt-only marker; <|start_header_id|>,
+// <|end_header_id|>, <|eot_id|> and <|end_of_text|> are control tags that
+// must never survive into visible chat text. If the native tokenizer ever
+// leaks them back into the decoded stream, strip them.
+function stripLeakedSpecialTokens(text) {
+  return String(text || '')
+    .replace(/<\|begin_of_text\|>/g, '')
+    .replace(/<\|end_header_id\|>/g, '')
+    .replace(/<\|start_header_id\|>/g, '')
+    .replace(/<\|eot_id\|>/g, '')
+    .replace(/<\|end_of_text\|>/g, '');
+}
+
+// A stop token can arrive split across decoded chunks ("<|eot", then "_id|>").
+// If the tail of the buffer is a PREFIX of a stop marker, hide it until the
+// matching suffix decides whether it completes the marker or is genuine text.
+function trailingPartialStopSuffix(text) {
+  const value = String(text || '');
+  // Longest common tail check: smallest marker is '<|eot_id|>' (10 chars),
+  // so at most 9 trailing chars can form an incomplete prefix.
+  for (let len = Math.min(9, value.length); len > 0; len -= 1) {
+    const tail = value.slice(-len);
+    for (let i = 0; i < STOP_MARKERS.length; i += 1) {
+      if (STOP_MARKERS[i].startsWith(tail) && STOP_MARKERS[i] !== tail) {
+        return tail;
+      }
+    }
+  }
+  return '';
+}
+
+function stripTrailingPartialStopMarker(text) {
+  const value = String(text || '');
+  const suffix = trailingPartialStopSuffix(value);
+  return suffix ? value.slice(0, -suffix.length) : value;
+}
+
+function sanitizeGeneratedText(text) {
+  return stripTrailingPartialStopMarker(stripLeakedSpecialTokens(truncateAtStopMarker(text)));
+}
+
 function getStopTokens(modelName) {
   const name = String(modelName || '').toLowerCase();
   if (name.includes('llama')) return ['<|eot_id|>', '<|end_of_text|>', '<|start_header_id|>'];
@@ -3067,7 +3110,8 @@ function stopActiveTypewriter() {
 function simulateTyping(element, text, shouldStop) {
   stopActiveTypewriter();
   return new Promise((resolve) => {
-    const words = String(text).match(/\S+\s*/g) || [String(text)];
+    const safeText = sanitizeGeneratedText(text);
+    const words = String(safeText).match(/\S+\s*/g) || [String(safeText)];
     let index = 0;
     element.innerText = '';
     clearInterval(activeTypewriterInterval);
@@ -3081,7 +3125,7 @@ function simulateTyping(element, text, shouldStop) {
       }
       element.innerText += words[index++];
       if (findStopMarkerIndex(element.innerText) !== -1) {
-        element.innerText = truncateAtStopMarker(element.innerText);
+        element.innerText = sanitizeGeneratedText(element.innerText);
         clearInterval(timer);
         if (activeTypewriterInterval === timer) activeTypewriterInterval = null;
         if (activeTypewriter && activeTypewriter.timer === timer) activeTypewriter = null;
@@ -3091,7 +3135,7 @@ function simulateTyping(element, text, shouldStop) {
       scheduleAutoScroll();
     }, 30);
     activeTypewriterInterval = timer;
-    activeTypewriter = { timer, resolve, element, text };
+    activeTypewriter = { timer, resolve, element, text: safeText };
   });
 }
 
@@ -3187,7 +3231,7 @@ async function generateResponse(userPrompt) {
       if (bubble && bubble.parentNode) bubble.remove();
       return;
     }
-    const partial = bubbleText ? bubbleText.innerText : '';
+    const partial = sanitizeGeneratedText(bubbleText ? bubbleText.innerText : '');
     if (partial.trim()) {
       revealBubble(partial);
       persistAssistantMessage(partial);
@@ -3204,7 +3248,7 @@ async function generateResponse(userPrompt) {
       if (bubble && bubble.parentNode) bubble.remove();
       return;
     }
-    const partial = truncateAtStopMarker(bubbleText ? bubbleText.innerText : '');
+    const partial = sanitizeGeneratedText(bubbleText ? bubbleText.innerText : '');
     if (bubbleText) bubbleText.innerText = partial;
     if (partial.trim()) {
       revealBubble(partial);
@@ -3272,6 +3316,9 @@ async function generateResponse(userPrompt) {
       streamed = true;
       revealBubble();
       bubbleText.innerText += tok;
+      if (bubbleText.innerText.indexOf('<|begin_of_text|>') !== -1) {
+        bubbleText.innerText = stripLeakedSpecialTokens(bubbleText.innerText);
+      }
       const stopIndex = findStopMarkerIndex(bubbleText.innerText);
       if (stopIndex !== -1) {
         bubbleText.innerText = bubbleText.innerText.slice(0, stopIndex);
@@ -3283,18 +3330,15 @@ async function generateResponse(userPrompt) {
 
     const modelKey = String(modelName || '').toLowerCase();
     const isLlamaModel = modelKey.includes('llama');
-    const isQwenModel = modelKey.includes('qwen');
-    const useNativeChatFormat = isLlamaModel || isQwenModel;
-    const chatFormat = isLlamaModel ? 'llama-3' : (isQwenModel ? 'chatml' : null);
-    const nativeMessages = useNativeChatFormat
-      ? [{ role: 'system', content: systemPrompt }].concat(
-          history.filter((msg) => msg.role !== 'system')
-        )
-      : null;
 
     console.log("RAW PROMPT:", formattedPrompt);
     console.log("FORMATTED PROMPT JSON:", JSON.stringify(formattedPrompt));
 
+    // Always send a fully hand-formatted raw prompt. The native chat path
+    // (getFormattedChat) forces use_jinja=false and can emit a legacy template
+    // that Llama 3.2 does not understand, so it continues the prompt as raw
+    // text instead of answering. parse_special:true makes the engine treat
+    // <|...|> markers as control tokens rather than 11 literal characters.
     const completionParams = {
       parse_special: true,
       n_predict: isLlamaModel ? 256 : appSettings.maxTokens,
@@ -3302,42 +3346,29 @@ async function generateResponse(userPrompt) {
       top_k: 40,
       penalty_repeat: appSettings.repeatPenalty,
       repeat_penalty: 1.15,
-      stop: getStopTokens(modelName),
+      // Serialized exactly as the Android JNI expects: completionNative()
+      // reads params "stop" with JSObject.getString() and parses the string
+      // as a JSON array. Passing a real JS array throws inside getString();
+      // the pending exception is cleared and the antiprompt list (the ONLY
+      // native stop mechanism besides EOS) is left EMPTY — so generation
+      // sails past <|eot_id|>/</s> until n_predict. A string passes
+      // getString() on both the vendored bundle path (forwarded verbatim)
+      // and the native-bridge fallback (re-routed below).
+      stop: JSON.stringify(getStopTokens(modelName)),
       add_bos_token: true,
+      chat_format: null,
     };
-    if (chatFormat) completionParams.chat_format = chatFormat;
 
-    let result;
-    if (useNativeChatFormat) {
-      try {
-        // Preferred path: let llama.cpp apply the chat template from the
-        // structured message list instead of hand-formatting control tokens.
-        result = await activeContext.completion({
-          ...completionParams,
-          messages: nativeMessages,
-        }, tokenCallback);
-      } catch (messagesError) {
-        if (generationTimedOut || isAborted()) throw messagesError;
-        console.warn('[Fern] messages completion failed; retrying with raw prompt:', messagesError);
-        if (streamed && bubbleText) {
-          streamed = false;
-          bubbleText.innerText = '';
-        }
-        const rawPrompt = isLlamaModel
-          ? ensureLlamaRawPrompt(formatPrompt(modelName, systemPrompt, history))
-          : formattedPrompt;
-        result = await activeContext.completion({
-          ...completionParams,
-          chat_format: null,
-          prompt: rawPrompt,
-        }, tokenCallback);
-      }
-    } else {
-      result = await activeContext.completion({
-        ...completionParams,
-        prompt: formattedPrompt,
-      }, tokenCallback);
-    }
+    // The native tokenizer already prepends BOS (tokenizer.ggml.add_bos_token
+    // is true for the llama3 pre-tokenizer), so drop the literal
+    // <|begin_of_text|> to avoid feeding the model two BOS tokens.
+    const rawPrompt = isLlamaModel
+      ? ensureLlamaRawPrompt(formattedPrompt).replace(/^<\|begin_of_text\|>/, '')
+      : formattedPrompt;
+    const result = await activeContext.completion({
+      ...completionParams,
+      prompt: rawPrompt,
+    }, tokenCallback);
 
     if (timeoutId) {
       clearTimeout(timeoutId);
@@ -3353,8 +3384,8 @@ async function generateResponse(userPrompt) {
       return;
     }
 
-    const fullText = truncateAtStopMarker((result && (result.content || result.text)) || '');
-    const finalText = fullText || (streamed ? truncateAtStopMarker(bubbleText.innerText) : '') || '[Empty response]';
+    const fullText = sanitizeGeneratedText((result && (result.content || result.text)) || '');
+    const finalText = fullText || (streamed ? sanitizeGeneratedText(bubbleText.innerText) : '') || '[Empty response]';
 
     if (!streamed && finalText !== '[Empty response]') {
       // The native token callback never fired: simulate typing so the user

@@ -234,20 +234,20 @@ const MODEL_CATALOG = [
     url: 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf',
   },
   {
-    id: 'llama-3.2-1b',
-    display: 'llama-3.2-1b.gguf',
-    file: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf',
-    size: '[780MB]',
+    id: 'qwen2.5-1.5b',
+    display: 'qwen2.5-1.5b.gguf',
+    file: 'qwen2.5-1.5b-instruct-q4_k_m.gguf',
+    size: '[1.0GB]',
     power: 2,
-    url: 'https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf',
+    url: 'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf',
   },
   {
-    id: 'llama-3.2-3b',
-    display: 'llama-3.2-3b.gguf',
-    file: 'Llama-3.2-3B-Instruct-Q4_K_M.gguf',
-    size: '[2.0GB]',
+    id: 'gemma-2-2b',
+    display: 'gemma-2-2b.gguf',
+    file: 'gemma-2-2b-it-Q4_K_M.gguf',
+    size: '[1.7GB]',
     power: 3,
-    url: 'https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf',
+    url: 'https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf',
   },
   {
     id: 'qwen2.5-3b',
@@ -1470,7 +1470,7 @@ async function renderModelSelector() {
   }).join('');
 
   const deviceMemory = Number(navigator.deviceMemory) || 0;
-  const recId = deviceMemory > 6 ? 'llama-3.2-3b' : 'llama-3.2-1b';
+  const recId = deviceMemory > 6 ? 'gemma-2-2b' : 'qwen2.5-1.5b';
   const catalogRows = MODEL_CATALOG.filter((model) => !installedNames.has(model.file)).map((model) => {
     const rec = model.id === recId
       ? '<span class="shrink-0 bg-white px-1 font-mono text-[9px] font-bold leading-4 text-black">[REC]</span>'
@@ -1621,7 +1621,7 @@ function scheduleSaveSettings(delay) {
 }
 
 async function updateAppVersion() {
-  let version = '1.1.0';
+  let version = '1.1.1';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -3365,6 +3365,7 @@ async function generateResponse(userPrompt) {
     const rawPrompt = isLlamaModel
       ? ensureLlamaRawPrompt(formattedPrompt).replace(/^<\|begin_of_text\|>/, '')
       : formattedPrompt;
+    alert("RAW PROMPT SENT TO NATIVE: \n\n" + formattedPrompt);
     const result = await activeContext.completion({
       ...completionParams,
       prompt: rawPrompt,

@@ -7,7 +7,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
   <a href="https://www.android.com/"><img src="https://img.shields.io/badge/platform-Android-green.svg" alt="Platform: Android" /></a>
-  <img src="https://img.shields.io/badge/version-1.0.0-orange.svg" alt="Version: 1.0.1" />
+  <img src="https://img.shields.io/badge/version-1.0.1-orange.svg" alt="Version: 1.0.1" />
 </p>
 
 <p align="center">

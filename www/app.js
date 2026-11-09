@@ -1621,7 +1621,7 @@ function scheduleSaveSettings(delay) {
 }
 
 async function updateAppVersion() {
-  let version = '1.1.1';
+  let version = '1.1.2';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -2962,13 +2962,13 @@ function formatPrompt(modelName, systemPrompt, history) {
     .filter((msg) => msg && msg.role && typeof msg.content === 'string');
 
   // Llama 3 / 3.2 — canonical template, byte-exact for a single turn:
-  // <|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{systemPrompt}<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n
+  // <|start_header_id|>system<|end_header_id|>\n\n{systemPrompt}<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n
   if (name.includes('llama')) {
     const turns = messages
       .filter((msg) => msg.role === 'user' || msg.role === 'assistant')
       .map((msg) => `<|start_header_id|>${msg.role}<|end_header_id|>\n\n${msg.content}<|eot_id|>`)
       .join('');
-    return `<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n${system}<|eot_id|>${turns}<|start_header_id|>assistant<|end_header_id|>\n\n`;
+    return `<|start_header_id|>system<|end_header_id|>\n\n${system}<|eot_id|>${turns}<|start_header_id|>assistant<|end_header_id|>\n\n`;
   }
 
   // Qwen / ChatML
@@ -3341,8 +3341,8 @@ async function generateResponse(userPrompt) {
     // <|...|> markers as control tokens rather than 11 literal characters.
     const completionParams = {
       parse_special: true,
-      n_predict: isLlamaModel ? 256 : appSettings.maxTokens,
-      temperature: isLlamaModel ? 0.3 : appSettings.temperature,
+      n_predict: isLlamaModel ? 128 : appSettings.maxTokens,
+      temperature: isLlamaModel ? 0.1 : appSettings.temperature,
       top_k: 40,
       penalty_repeat: appSettings.repeatPenalty,
       repeat_penalty: 1.15,
@@ -3356,7 +3356,7 @@ async function generateResponse(userPrompt) {
       // and the native-bridge fallback (re-routed below).
       stop: JSON.stringify(getStopTokens(modelName)),
       add_bos_token: true,
-      chat_format: null,
+      chat_format: 'llama-3',
     };
 
     // The native tokenizer already prepends BOS (tokenizer.ggml.add_bos_token
@@ -3365,7 +3365,6 @@ async function generateResponse(userPrompt) {
     const rawPrompt = isLlamaModel
       ? ensureLlamaRawPrompt(formattedPrompt).replace(/^<\|begin_of_text\|>/, '')
       : formattedPrompt;
-    alert("RAW PROMPT SENT TO NATIVE: \n\n" + formattedPrompt);
     const result = await activeContext.completion({
       ...completionParams,
       prompt: rawPrompt,

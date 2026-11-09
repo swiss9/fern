@@ -1,75 +1,74 @@
 <p align="center">
-  <img src="assets/icon-only.png" alt="Fern logo" width="128" height="128" />
+  <img src="assets/icon-only.png" alt="Fern logo" width="112" height="112" />
 </p>
 
 <h1 align="center">Fern</h1>
 
 <p align="center">
-  <strong>Private, on-device AI chat for Android.</strong><br />
-  Your prompts, your models, your device. Nothing leaves the phone.
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
+  <a href="https://www.android.com/"><img src="https://img.shields.io/badge/platform-Android-green.svg" alt="Platform: Android" /></a>
+  <img src="https://img.shields.io/badge/version-1.0.0-orange.svg" alt="Version: 1.0.0" />
 </p>
 
 <p align="center">
-  <a href="#early-access">Early Access</a> ·
-  <a href="#load-a-model">Load a model</a> ·
-  <a href="#privacy">Privacy</a> ·
-  <a href="#support-development">Support</a>
+  A local-first AI chat client for Android. Every prompt runs entirely on your
+  device through llama.cpp, with no cloud, no account, and no telemetry.
 </p>
 
 ---
 
-## Fern
+## Features
 
-Fern is a local-first AI client. Inference runs entirely on-device through
-[llama.cpp](https://github.com/ggml-org/llama.cpp), so you can chat with open
-`.gguf` models offline, with no account, no cloud, and no telemetry.
+- **100% offline inference** — prompts and responses never leave the phone; the app works with no network at all after the model is loaded.
+- **GGUF support** — load any compatible `.gguf` model directly from device storage, with built-in download links for popular open-weight models.
+- **Multi-model management** — keep several models installed, switch between them instantly, and chat with separate histories per model.
+- **Custom personalities** — override the default system prompt per session to shape how the assistant behaves.
+- **Fast, minimal UI** — a lightweight interface tuned for phones, with streaming responses and instant stop.
 
-- **100% local inference** — no server round-trips, no data collection.
-- **Bring your own model** — load any compatible `.gguf` file.
-- **Persistent chat** — conversations stay on your device, scoped per model.
-- **Built for Android** — tuned for phones and tablets, with a fast, minimal UI.
+## Screenshots
+
+> Screenshots are coming with the first release. Placeholder paths below.
+
+| Chat | Model manager |
+| ---- | ------------- |
+| ![Chat screen placeholder](docs/screenshots/chat.png) | ![Model manager placeholder](docs/screenshots/models.png) |
+
+## Installation
+
+1. Download the latest APK from the [Releases](https://github.com/swiss9/fern/releases) page.
+2. On your device, open the APK and allow installation from your browser/file manager if prompted.
+3. Launch Fern and load a model:
+   - Pick a `.gguf` file with the built-in model catalog (downloads when selected), or
+   - Import a `.gguf` file you already have with the system file picker.
+4. Start chatting — everything runs on-device.
+
+Model recommendations: `Llama-3.2-1B (Q5_K_M)` or `Qwen2.5-1.5B (Q4_K_M)` on
+phones with ~4 GB of free memory; larger models need more RAM.
+
+## Building from Source
+
+Requirements: Android Studio (or the Android SDK + Gradle), Node.js 18+, and
+JDK 17.
+
+```bash
+git clone https://github.com/swiss9/fern.git
+cd fern
+npm install
+npx cap sync android
+```
+
+- **Android Studio:** open the `android/` directory and run the app target.
+- **CLI:** `npx cap copy android && cd android && ./gradlew assembleDebug`
+
+The debug APK is output to `android/app/build/outputs/apk/debug/`.
 
 ## Early Access
 
-Fern is launching as a **100% free Early Access release**. The goal is simple:
-earn your trust by shipping a genuinely private, useful local AI client before
-asking for anything in return.
+Fern is currently **completely free**, with no ads, no paywalls, and no locked
+features. Early Access exists to earn trust first: ship a genuinely private
+local AI client, then let people decide if it is worth supporting.
 
-- No paywalls, trials, or locked features during Early Access.
-- No ads and no tracking.
-- Donations are always optional and never unlock extra functionality.
-
-Early Access is a promise: the core app stays free, open, and local. If Fern
-earns a place on your device, you can support development voluntarily.
-
-## Load a model
-
-Fern does not bundle model weights. Download a `.gguf` model separately and
-import it into the app.
-
-1. Download a compatible model file (`.gguf`) to your device. Good starting
-   points are small quantized models such as `Q4_K_M` variants that fit your
-   available RAM.
-2. Open Fern and tap the model / load button.
-3. Pick the `.gguf` file with the system file picker.
-4. Wait for the import to finish, then select the model to start chatting.
-
-Tips:
-
-- Prefer `Q4_K_M` (or smaller) quantizations on phones with limited memory.
-- Larger models and higher context sizes need more RAM and load more slowly.
-- Model files and chats are stored in the app's private storage.
-- Removing a model from the Model Manager deletes its local file.
-
-## Privacy
-
-Fern has **zero telemetry** and stores everything locally. See
-[PRIVACY.md](PRIVACY.md) for the full policy.
-
-## Support development
-
-Fern is free during Early Access. If you would like to support ongoing work,
-crypto donations are welcome and entirely optional:
+Donations are optional and appreciated, and never unlock extra functionality:
 
 | Network          | Address |
 | ---------------- | ------- |
@@ -77,9 +76,6 @@ crypto donations are welcome and entirely optional:
 | BNB Smart Chain  | `0xdCE4bAEcCA99B8239A02111E8a354eF1Af1494c6` |
 | Solana           | `HDnhGVB3JGBjnYy8acuhohTPUNgMHRKv3p4CsK7T1dCK` |
 
-You can also copy these addresses from **Settings → Support Development** inside
-the app.
-
 ## License
 
-[MIT](LICENSE)
+Distributed under the [MIT License](LICENSE).

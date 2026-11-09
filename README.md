@@ -64,11 +64,9 @@ The debug APK is output to `android/app/build/outputs/apk/debug/`.
 
 ## Early Access
 
-Fern is currently **completely free**, with no ads, no paywalls, and no locked
-features. Early Access exists to earn trust first: ship a genuinely private
-local AI client, then let people decide if it is worth supporting.
+Fern is currently in Early Access and is **100% free**. There are no ads, paywalls, or locked features.
 
-Donations are optional and appreciated, and never unlock extra functionality:
+If you find the app useful and want to support its development, you can send a donation to one of the crypto addresses below. Donations are entirely optional and go directly toward keeping the project alive.
 
 | Network          | Address |
 | ---------------- | ------- |

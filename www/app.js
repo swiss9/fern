@@ -166,6 +166,7 @@ const temperatureSlider = document.getElementById('temperature-slider');
 const temperatureValue = document.getElementById('temperature-value');
 const maxTokensSlider = document.getElementById('max-tokens-slider');
 const maxTokensValue = document.getElementById('max-tokens-value');
+const maxTokensHint = document.getElementById('max-tokens-hint');
 const repeatPenaltySlider = document.getElementById('repeat-penalty-slider');
 const repeatPenaltyValue = document.getElementById('repeat-penalty-value');
 const modelList = document.getElementById('model-list');
@@ -1588,6 +1589,7 @@ function applySettingsToControls() {
   if (temperatureValue) temperatureValue.innerText = appSettings.temperature.toFixed(1);
   if (maxTokensSlider) maxTokensSlider.value = String(appSettings.maxTokens);
   if (maxTokensValue) maxTokensValue.innerText = String(appSettings.maxTokens);
+  if (maxTokensHint) maxTokensHint.classList.toggle('hidden', appSettings.maxTokens !== 512);
   if (repeatPenaltySlider) repeatPenaltySlider.value = String(appSettings.repeatPenalty);
   if (repeatPenaltyValue) repeatPenaltyValue.innerText = appSettings.repeatPenalty.toFixed(2);
 }
@@ -1629,7 +1631,7 @@ function scheduleSaveSettings(delay) {
 }
 
 async function updateAppVersion() {
-  let version = '1.0.0';
+  let version = '1.0.1';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -3339,6 +3341,15 @@ async function generateResponse(userPrompt) {
     const modelKey = String(modelName || '').toLowerCase();
     const isLlamaModel = modelKey.includes('llama');
 
+    const promptLength = String(userPrompt || '').length;
+    let dynamicMaxTokens = appSettings.maxTokens;
+    if (promptLength < 20) {
+      dynamicMaxTokens = 150;
+    } else if (promptLength < 100) {
+      dynamicMaxTokens = 256;
+    }
+    const effectiveMaxTokens = Math.min(dynamicMaxTokens, appSettings.maxTokens);
+
     // Always send a fully hand-formatted raw prompt. The native chat path
     // (getFormattedChat) forces use_jinja=false and can emit a legacy template
     // that Llama 3.2 does not understand, so it continues the prompt as raw
@@ -3346,7 +3357,7 @@ async function generateResponse(userPrompt) {
     // <|...|> markers as control tokens rather than 11 literal characters.
     const completionParams = {
       parse_special: true,
-      n_predict: isLlamaModel ? 512 : appSettings.maxTokens,
+      n_predict: effectiveMaxTokens,
       temperature: isLlamaModel ? 0.6 : appSettings.temperature,
       top_k: 40,
       penalty_repeat: appSettings.repeatPenalty,
@@ -3798,6 +3809,7 @@ temperatureSlider.addEventListener('input', () => {
 maxTokensSlider.addEventListener('input', () => {
   appSettings.maxTokens = Math.round(clampNumber(maxTokensSlider.value, 128, 1024, DEFAULT_SETTINGS.maxTokens));
   maxTokensValue.innerText = String(appSettings.maxTokens);
+  if (maxTokensHint) maxTokensHint.classList.toggle('hidden', appSettings.maxTokens !== 512);
   scheduleSaveSettings(500);
 });
 

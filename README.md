@@ -27,11 +27,9 @@
 
 ## Screenshots
 
-> Screenshots are coming with the first release. Placeholder paths below.
-
-| Chat | Model manager |
-| ---- | ------------- |
-| ![Chat screen placeholder](docs/screenshots/chat.png) | ![Model manager placeholder](docs/screenshots/models.png) |
+| Chat | Settings |
+| ---- | -------- |
+| ![Chat screen](images/chat.jpg) | ![Settings screen](images/settings.jpg) |
 
 ## Installation
 

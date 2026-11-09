@@ -234,6 +234,14 @@ const MODEL_CATALOG = [
     url: 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf',
   },
   {
+    id: 'llama-3.2-1b',
+    display: 'llama-3.2-1b.gguf',
+    file: 'Llama-3.2-1B-Instruct-Q5_K_M.gguf',
+    size: '[911MB]',
+    power: 2,
+    url: 'https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q5_K_M.gguf',
+  },
+  {
     id: 'qwen2.5-1.5b',
     display: 'qwen2.5-1.5b.gguf',
     file: 'qwen2.5-1.5b-instruct-q4_k_m.gguf',
@@ -1621,7 +1629,7 @@ function scheduleSaveSettings(delay) {
 }
 
 async function updateAppVersion() {
-  let version = '1.1.2';
+  let version = '1.1.3';
   try {
     const { Device } = getPlugins();
     if (Device) {

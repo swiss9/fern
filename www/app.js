@@ -44,6 +44,9 @@ function createNativeLlamaBridge() {
           penalty_repeat: params.penalty_repeat,
           stop: Array.isArray(params.stop) ? params.stop : undefined,
           emit_partial_completion: !!callback,
+          chat_format: params.chat_format,
+          add_bos_token: params.add_bos_token,
+          parse_special: params.parse_special,
         };
         if (params.prompt) {
           return await native.completion({
@@ -276,6 +279,10 @@ let confirmResolve = null;
 let settingsSaveTimer = null;
 let systemPromptSaveTimer = null;
 let scrollFramePending = false;
+let messageRenderToken = 0;
+let overlayHideTimer = null;
+let errorOverlayHideTimer = null;
+let ramWarningHideTimer = null;
 
 function hideSplash() {
   if (!splashOverlay) return;
@@ -289,29 +296,51 @@ function hideSplash() {
 function showOverlay(text) {
   progressText.classList.remove('text-red-400');
   progressText.innerText = text;
+  clearTimeout(overlayHideTimer);
+  overlayHideTimer = null;
   overlay.classList.remove('hidden');
   overlay.style.display = 'flex';
-  overlay.style.opacity = '1';
+  overlay.style.opacity = '0';
   overlay.style.pointerEvents = 'none';
+  requestAnimationFrame(() => {
+    overlay.style.opacity = '1';
+  });
 }
 
 function hideOverlay() {
-  overlay.classList.add('hidden');
-  overlay.style.display = 'none';
+  clearTimeout(overlayHideTimer);
   overlay.style.opacity = '0';
   overlay.style.pointerEvents = 'none';
+  overlayHideTimer = setTimeout(() => {
+    overlayHideTimer = null;
+    overlay.classList.add('hidden');
+    overlay.style.display = 'none';
+  }, 200);
 }
 
 function showErrorOverlay(title, message) {
   errorTitle.innerText = title || 'Something went wrong';
   errorMessage.innerText = String(message || 'Unknown error');
+  clearTimeout(errorOverlayHideTimer);
+  errorOverlayHideTimer = null;
   errorOverlay.classList.remove('hidden');
   errorOverlay.style.display = 'flex';
+  errorOverlay.style.pointerEvents = 'auto';
+  errorOverlay.style.opacity = '0';
+  requestAnimationFrame(() => {
+    errorOverlay.style.opacity = '1';
+  });
 }
 
 function closeErrorOverlay() {
-  errorOverlay.classList.add('hidden');
-  errorOverlay.style.display = 'none';
+  clearTimeout(errorOverlayHideTimer);
+  errorOverlay.style.opacity = '0';
+  errorOverlay.style.pointerEvents = 'none';
+  errorOverlayHideTimer = setTimeout(() => {
+    errorOverlayHideTimer = null;
+    errorOverlay.classList.add('hidden');
+    errorOverlay.style.display = 'none';
+  }, 200);
   hideOverlay();
   if (!modelName) {
     resetToNoModelState();
@@ -325,8 +354,15 @@ let ramWarningResolve = null;
 function showRamWarning(message) {
   if (!ramWarningOverlay) return Promise.resolve(false);
   ramWarningMessage.innerText = String(message || '');
+  clearTimeout(ramWarningHideTimer);
+  ramWarningHideTimer = null;
   ramWarningOverlay.classList.remove('hidden');
   ramWarningOverlay.style.display = 'flex';
+  ramWarningOverlay.style.pointerEvents = 'auto';
+  ramWarningOverlay.style.opacity = '0';
+  requestAnimationFrame(() => {
+    ramWarningOverlay.style.opacity = '1';
+  });
   return new Promise((resolve) => {
     ramWarningResolve = resolve;
   });
@@ -334,8 +370,14 @@ function showRamWarning(message) {
 
 function resolveRamWarning(proceed) {
   if (!ramWarningOverlay) return;
-  ramWarningOverlay.classList.add('hidden');
-  ramWarningOverlay.style.display = 'none';
+  clearTimeout(ramWarningHideTimer);
+  ramWarningOverlay.style.opacity = '0';
+  ramWarningOverlay.style.pointerEvents = 'none';
+  ramWarningHideTimer = setTimeout(() => {
+    ramWarningHideTimer = null;
+    ramWarningOverlay.classList.add('hidden');
+    ramWarningOverlay.style.display = 'none';
+  }, 200);
   const resolve = ramWarningResolve;
   ramWarningResolve = null;
   if (resolve) resolve(!!proceed);
@@ -405,7 +447,7 @@ function resetToNoModelState() {
   setSendEnabled(false);
   setMultimodalSupport(false);
   renderSidebarSessions();
-  messagesEl.innerHTML = '';
+  clearMessagesDom();
   showEmptyState();
   setEmptyStateMessage('No local model loaded.');
 }
@@ -955,18 +997,32 @@ function scheduleAutoScroll(force) {
   });
 }
 
-function renderSessionMessages() {
+function clearMessagesDom() {
+  messageRenderToken += 1;
   messagesEl.innerHTML = '';
-  const messages = activeMessages();
-  if (messages.length === 0) {
-    showEmptyState();
-    return;
+}
+
+function renderSessionMessages() {
+  const messages = activeMessages().slice();
+  const token = ++messageRenderToken;
+  const render = () => {
+    if (token !== messageRenderToken) return;
+    messagesEl.innerHTML = '';
+    if (messages.length === 0) {
+      showEmptyState();
+      return;
+    }
+    hideEmptyState();
+    messages.forEach((message, index) => {
+      appendMessage(message.role, message.content, { persist: false, index, immediate: true });
+    });
+    scheduleAutoScroll(true);
+  };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(render);
+  } else {
+    render();
   }
-  hideEmptyState();
-  messages.forEach((message, index) => {
-    appendMessage(message.role, message.content, { persist: false, index });
-  });
-  scheduleAutoScroll(true);
 }
 
 function editUserMessage(index) {
@@ -1737,7 +1793,7 @@ async function deleteModel(filename) {
     setModelLabels('');
     updatePersonalizationControls();
     renderSidebarSessions();
-    messagesEl.innerHTML = '';
+    clearMessagesDom();
     await clearActiveModelName();
     showEmptyState();
     setEmptyStateMessage('No local model loaded.');
@@ -1779,7 +1835,7 @@ async function deleteAllModels() {
   setModelLabels('');
   updatePersonalizationControls();
   renderSidebarSessions();
-  messagesEl.innerHTML = '';
+  clearMessagesDom();
   await clearActiveModelName();
   showEmptyState();
   setEmptyStateMessage('No local model loaded.');
@@ -2493,6 +2549,7 @@ async function pickAndLoadModel() {
   const previousModelName = modelName;
   const previousModelDisplayName = modelDisplayName;
   const previousSessionId = activeSessionId;
+  let pickTimeoutId = null;
 
   try {
     const { FilePicker, Filesystem } = getPlugins();
@@ -2502,10 +2559,19 @@ async function pickAndLoadModel() {
     if (!FilePicker) {
       throw new Error('The FilePicker plugin is not installed.');
     }
-    const result = await FilePicker.pickFiles({
-      types: ['*/*', 'application/octet-stream'],
-      limit: 1,
-    });
+    const result = await Promise.race([
+      FilePicker.pickFiles({
+        types: ['*/*', 'application/octet-stream'],
+        limit: 1,
+      }),
+      new Promise((_, reject) => {
+        pickTimeoutId = setTimeout(() => {
+          const timeoutError = new Error('File picker timed out after 60 seconds');
+          timeoutError.fernCancelled = true;
+          reject(timeoutError);
+        }, 60000);
+      }),
+    ]);
     const file = result && result.files && result.files[0];
     if (!file) return;
     const filename = String(file.name || file.path || '').split('/').pop();
@@ -2573,6 +2639,12 @@ async function pickAndLoadModel() {
     setSendEnabled(contextReady);
     if (!cancelled) reportModelLoadError(error);
   } finally {
+    if (pickTimeoutId) {
+      clearTimeout(pickTimeoutId);
+      pickTimeoutId = null;
+    }
+    // Always clear the blocking overlay, whether the picker was cancelled,
+    // timed out, crashed, or the model failed to load.
     hideOverlay();
     setSendEnabled(contextReady);
   }
@@ -2666,6 +2738,24 @@ async function onModelReady(options) {
 // ============================================================
 // 5. CHAT UI RENDERING
 // ============================================================
+function attachMessageNode(node, options) {
+  const attach = () => {
+    if (!node || node.parentNode) return;
+    messagesEl.appendChild(node);
+    hideEmptyState();
+    scheduleAutoScroll(options && options.forceScroll);
+  };
+  if (options && options.immediate) {
+    attach();
+    return;
+  }
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(attach);
+  } else {
+    attach();
+  }
+}
+
 function appendMessage(role, content, options) {
   const persist = !options || options.persist !== false;
   let editIndex = options && Number.isInteger(options.index) ? options.index : -1;
@@ -2724,9 +2814,7 @@ function appendMessage(role, content, options) {
     if (content) div.querySelector('p').innerText = content;
   }
 
-  messagesEl.appendChild(div);
-  hideEmptyState();
-  scheduleAutoScroll();
+  attachMessageNode(div, { immediate: !!(options && options.immediate) });
   return div;
 }
 
@@ -2872,7 +2960,17 @@ function formatPrompt(modelName, systemPrompt, history) {
   return prompt + '<|im_start|>assistant\n';
 }
 
-function showTypingIndicator() {
+// The raw fallback prompt must start with the Llama 3 BOS token and contain
+// real newlines. Some callers hand us escaped "\\n" sequences, so normalize.
+function ensureLlamaRawPrompt(prompt) {
+  let text = String(prompt || '').replace(/\\n/g, '\n');
+  if (!text.startsWith('<|begin_of_text|>')) {
+    text = '<|begin_of_text|>' + text;
+  }
+  return text;
+}
+
+function showTypingIndicator(runId) {
   const div = document.createElement('div');
   div.id = 'typing-indicator';
   div.className = 'group mb-9 flex gap-3';
@@ -2891,10 +2989,27 @@ function showTypingIndicator() {
       '</div>' +
     '</div>';
 
-  messagesEl.appendChild(div);
-  hideEmptyState();
-  scheduleAutoScroll();
+  const attach = () => {
+    if (!div || div.parentNode) return;
+    if (generationAbortRequested) return;
+    if (runId != null && runId !== generationRunId) return;
+    messagesEl.appendChild(div);
+    hideEmptyState();
+    scheduleAutoScroll();
+  };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(attach);
+  } else {
+    attach();
+  }
   return div;
+}
+
+function removeTypingIndicator() {
+  const target = document.getElementById('typing-indicator') || lastAssistantBubble();
+  if (!target) return;
+  const dots = target.querySelector('[data-typing-dots]');
+  if (dots) dots.remove();
 }
 
 function persistAssistantMessage(text) {
@@ -2973,21 +3088,34 @@ async function requestNativeAbort() {
 }
 
 async function stopGeneration() {
-  if (!isGenerating) return;
-  generationAbortRequested = true;
-
-  // Flip the UI instantly so the button responds on the first tap; the
-  // native abort is fired in the background and never blocks the repaint.
+  // Reset the UI first, before touching the native engine, so the stop button
+  // and typing indicator react instantly on the very first tap.
   isGenerating = false;
-  setModelControlsLocked(false);
   clearInterval(activeTypewriterInterval);
   activeTypewriterInterval = null;
-  stopActiveTypewriter();
+  removeTypingIndicator();
   updateSendButton();
   sendBtn.innerHTML = SEND_ICON_HTML;
   sendBtn.setAttribute('aria-label', 'Send message');
+
+  generationAbortRequested = true;
+  stopActiveTypewriter();
+  setModelControlsLocked(false);
   stopGenerationForegroundService();
-  requestNativeAbort();
+
+  // Fire the native abort in the background; it must never block the repaint.
+  (async () => {
+    try {
+      const LlamaCpp = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins[LlamaCppPluginName];
+      if (LlamaCpp && typeof LlamaCpp.abort === 'function') {
+        await LlamaCpp.abort();
+      } else {
+        await requestNativeAbort();
+      }
+    } catch (error) {
+      console.warn('[Fern] LlamaCpp.abort failed:', error);
+    }
+  })();
 }
 
 async function generateResponse(userPrompt) {
@@ -3000,7 +3128,7 @@ async function generateResponse(userPrompt) {
   inputEl.value = '';
   inputEl.style.height = 'auto';
 
-  const bubble = showTypingIndicator();
+  const bubble = showTypingIndicator(runId);
   const bubbleText = bubble.querySelector('p');
   let bubbleDots = bubble.querySelector('[data-typing-dots]');
 
@@ -3100,21 +3228,49 @@ async function generateResponse(userPrompt) {
     console.log("RAW PROMPT:", formattedPrompt);
     console.log("FORMATTED PROMPT JSON:", JSON.stringify(formattedPrompt));
 
-    const result = await activeContext.completion({
-      prompt: formattedPrompt,
-      messages: nativeMessages,
-      chat_format: chatFormat,
+    const completionParams = {
       parse_special: true,
-      chatTemplate: null,
-      chat_template: null,
-      applyTemplate: false,
       n_predict: isLlamaModel ? 256 : appSettings.maxTokens,
       temperature: isLlamaModel ? 0.3 : appSettings.temperature,
       top_k: 40,
       penalty_repeat: appSettings.repeatPenalty,
       repeat_penalty: 1.15,
       stop: getStopTokens(modelName),
-    }, tokenCallback);
+      add_bos_token: true,
+    };
+    if (chatFormat) completionParams.chat_format = chatFormat;
+
+    let result;
+    if (useNativeChatFormat) {
+      try {
+        // Preferred path: let llama.cpp apply the chat template from the
+        // structured message list instead of hand-formatting control tokens.
+        result = await activeContext.completion({
+          ...completionParams,
+          messages: nativeMessages,
+        }, tokenCallback);
+      } catch (messagesError) {
+        if (generationTimedOut || isAborted()) throw messagesError;
+        console.warn('[Fern] messages completion failed; retrying with raw prompt:', messagesError);
+        if (streamed && bubbleText) {
+          streamed = false;
+          bubbleText.innerText = '';
+        }
+        const rawPrompt = isLlamaModel
+          ? ensureLlamaRawPrompt(formatPrompt(modelName, systemPrompt, history))
+          : formattedPrompt;
+        result = await activeContext.completion({
+          ...completionParams,
+          chat_format: null,
+          prompt: rawPrompt,
+        }, tokenCallback);
+      }
+    } else {
+      result = await activeContext.completion({
+        ...completionParams,
+        prompt: formattedPrompt,
+      }, tokenCallback);
+    }
 
     if (timeoutId) {
       clearTimeout(timeoutId);
@@ -3180,17 +3336,20 @@ async function generateResponse(userPrompt) {
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
     stopActiveTypewriter();
+    if (bubble) {
+      const pendingDots = bubble.querySelector('[data-typing-dots]');
+      if (pendingDots) pendingDots.remove();
+    }
     if (isCurrentRun()) {
+      removeTypingIndicator();
       await allowScreenSleep();
-      if (!generationAbortRequested) {
-        isGenerating = false;
-        setModelControlsLocked(false);
-        generationAbortRequested = false;
-        updateSendButton();
-        sendBtn.innerHTML = SEND_ICON_HTML;
-        sendBtn.setAttribute('aria-label', 'Send message');
-        await stopGenerationForegroundService();
-      }
+      isGenerating = false;
+      setModelControlsLocked(false);
+      generationAbortRequested = false;
+      updateSendButton();
+      sendBtn.innerHTML = SEND_ICON_HTML;
+      sendBtn.setAttribute('aria-label', 'Send message');
+      await stopGenerationForegroundService();
     }
   }
 }

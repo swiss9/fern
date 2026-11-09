@@ -1629,7 +1629,7 @@ function scheduleSaveSettings(delay) {
 }
 
 async function updateAppVersion() {
-  let version = '1.1.3';
+  let version = '1.0.0';
   try {
     const { Device } = getPlugins();
     if (Device) {
@@ -3339,9 +3339,6 @@ async function generateResponse(userPrompt) {
     const modelKey = String(modelName || '').toLowerCase();
     const isLlamaModel = modelKey.includes('llama');
 
-    console.log("RAW PROMPT:", formattedPrompt);
-    console.log("FORMATTED PROMPT JSON:", JSON.stringify(formattedPrompt));
-
     // Always send a fully hand-formatted raw prompt. The native chat path
     // (getFormattedChat) forces use_jinja=false and can emit a legacy template
     // that Llama 3.2 does not understand, so it continues the prompt as raw
@@ -3349,8 +3346,8 @@ async function generateResponse(userPrompt) {
     // <|...|> markers as control tokens rather than 11 literal characters.
     const completionParams = {
       parse_special: true,
-      n_predict: isLlamaModel ? 128 : appSettings.maxTokens,
-      temperature: isLlamaModel ? 0.1 : appSettings.temperature,
+      n_predict: isLlamaModel ? 512 : appSettings.maxTokens,
+      temperature: isLlamaModel ? 0.6 : appSettings.temperature,
       top_k: 40,
       penalty_repeat: appSettings.repeatPenalty,
       repeat_penalty: 1.15,

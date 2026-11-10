@@ -48,6 +48,13 @@ jobs:
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/fern-keystore.jks
 
+      - name: Strip native debug symbols
+        run: |
+          STRIP="$ANDROID_HOME/ndk/29.0.13113456/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          JNI_DIR="node_modules/llama-cpp-pro/android/src/main/jniLibs"
+          find "$JNI_DIR" -type f -name "*.so" -exec "$STRIP" --strip-unneeded {} \;
+          find "$JNI_DIR" -type f -name "*.so" -exec ls -lh {} \;
+
       - name: Build APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}

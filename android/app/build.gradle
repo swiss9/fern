@@ -7,8 +7,8 @@ android {
         applicationId "com.fern.localai"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 66
-        versionName "1.0.4"
+        versionCode 67
+        versionName "1.0.5"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -94,4 +94,45 @@ try {
     }
 } catch(Exception e) {
     logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
+
+// Task to strip the native library AFTER CMake builds it but BEFORE packaging
+tasks.register("stripLlamaLibs") {
+    doLast {
+        def jniLibsDir = file("${projectDir}/src/main/jniLibs/arm64-v8a")
+        // Also check the node_modules path where the plugin builds it
+        def pluginJniDir = file("${rootProject.projectDir}/../node_modules/llama-cpp-pro/android/src/main/jniLibs/arm64-v8a")
+
+        def ndkHome = System.getenv('ANDROID_NDK_HOME') ?: System.getenv('ANDROID_HOME')
+        if (ndkHome == null) {
+            throw new GradleException("ANDROID_NDK_HOME or ANDROID_HOME must be set to locate llvm-strip")
+        }
+        def stripTool = "${ndkHome}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+        if (!file(stripTool).exists()) {
+            // Fallback: NDK installed under $ANDROID_HOME/ndk/<version>
+            def found = fileTree(dir: "${ndkHome}/ndk", include: '**/llvm-strip').files
+            if (found.isEmpty()) {
+                throw new GradleException("llvm-strip not found under ${ndkHome}")
+            }
+            stripTool = found.first().absolutePath
+        }
+
+        [jniLibsDir, pluginJniDir].each { dir ->
+            if (dir.exists()) {
+                dir.eachFileMatch(~/.*\.so/) { soFile ->
+                    println "Stripping: ${soFile.absolutePath}"
+                    exec {
+                        commandLine stripTool, '--strip-unneeded', soFile.absolutePath
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Hook the task to run before the APK is assembled
+tasks.whenTaskAdded { task ->
+    if (task.name == 'mergeReleaseNativeLibs' || task.name == 'packageRelease') {
+        task.dependsOn 'stripLlamaLibs'
+    }
 }

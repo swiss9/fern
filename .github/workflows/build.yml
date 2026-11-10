@@ -48,25 +48,6 @@ jobs:
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/fern-keystore.jks
 
-      - name: Strip native libraries
-        run: |
-          set -e
-          # Find the exact .so file in the plugin
-          SO_FILE=$(find node_modules/llama-cpp-pro/android/src/main/jniLibs/arm64-v8a -name "*.so" | head -n 1)
-          echo "Found .so file at: $SO_FILE"
-          echo "Size before strip: $(du -h "$SO_FILE")"
-
-          # Find the correct llvm-strip in the NDK
-          NDK_DIR="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/29.0.13113456}"
-          STRIP_TOOL=$(find "$NDK_DIR" -name "llvm-strip" | grep "linux-x86_64" | head -n 1)
-          echo "Using strip tool: $STRIP_TOOL"
-
-          # Run the strip
-          "$STRIP_TOOL" --strip-unneeded "$SO_FILE"
-
-          echo "Size after strip: $(du -h "$SO_FILE")"
-          ls -lh node_modules/llama-cpp-pro/android/src/main/jniLibs/arm64-v8a/
-
       - name: Build APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
